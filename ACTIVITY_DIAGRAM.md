@@ -5,45 +5,39 @@ Sơ đồ này mô tả luồng hoạt động chi tiết từ khi Partner tạo
 ## 1. Sơ đồ Activity Diagram
 
 ```mermaid
-activityDiagram
-    start
-    :Partner đăng nhập;
-    :Nhập thông tin quán ăn;
-    :Nhập kịch bản Tiếng Việt;
+flowchart TD
+    Start([Bắt đầu]) --> Login[Partner đăng nhập]
+    Login --> Input[Nhập thông tin quán & Kịch bản VN]
     
-    partition "Xử lý AI (Frontend)" {
-        :Nhấn nút AI Ma Thuật;
-        :Gemini dịch sang 4 ngôn ngữ;
-        :Gemini tạo 5 file Audio TTS;
-    }
+    subgraph AI_Process [Xử lý AI - Frontend]
+        PressAI[Nhấn nút AI Ma Thuật] --> GeminiTrans[Gemini dịch thuật]
+        GeminiTrans --> GeminiTTS[Gemini tạo Audio TTS]
+    end
     
-    :Partner kiểm tra & nghe thử;
+    Input --> PressAI
+    GeminiTTS --> Review{Partner nghe thử?}
     
-    if (Hài lòng?) then (Có)
-        :Nhấn Lưu (Gửi yêu cầu);
-        :Backend tạo bản ghi 'Pending Request';
-    else (Không)
-        :Chỉnh sửa lại kịch bản;
-        backward: Quay lại nhập liệu;
-    endif
-
-    partition "Quản trị (Admin)" {
-        :Admin đăng nhập;
-        :Vào danh sách Chờ duyệt;
-        :Xem chi tiết yêu cầu;
-        
-        if (Nội dung hợp lệ?) then (Đồng ý)
-            :Nhấn Duyệt;
-            :Hệ thống cập nhật Database chính;
-            :Trạng thái yêu cầu -> Approved;
-        else (Từ chối)
-            :Nhấn Từ chối;
-            :Trạng thái yêu cầu -> Rejected;
-        endif
-    }
-
-    :Thông báo kết quả cho Partner;
-    stop
+    Review -- "Không hài lòng" --> Input
+    Review -- "Hài lòng" --> Save[Nhấn Lưu - Gửi yêu cầu]
+    
+    Save --> Backend[Backend tạo Pending Request]
+    
+    subgraph Admin_Process [Quản trị - Admin]
+        AdminLogin[Admin đăng nhập] --> ViewReq[Xem danh sách Chờ duyệt]
+        ViewReq --> Check{Nội dung hợp lệ?}
+        Check -- "Đồng ý" --> Approve[Nhấn Duyệt]
+        Check -- "Từ chối" --> Reject[Nhấn Từ chối]
+    end
+    
+    Backend --> AdminLogin
+    
+    Approve --> UpdateDB[Cập nhật Database chính]
+    UpdateDB --> NotifyApprove([Thông báo: Đã đăng bản đồ])
+    
+    Reject --> NotifyReject([Thông báo: Yêu cầu bị từ chối])
+    
+    NotifyApprove --> End([Kết thúc])
+    NotifyReject --> End
 ```
 
 ## 2. Các điểm quyết định (Decision Points)

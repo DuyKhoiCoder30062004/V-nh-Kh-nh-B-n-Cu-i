@@ -5,37 +5,37 @@ Sơ đồ này mô tả các chức năng chính của hệ thống và sự tư
 ## 1. Sơ đồ Use Case
 
 ```mermaid
-useCaseDiagram
-    actor "Khách tham quan (Guest)" as Guest
-    actor "Chủ quán (Partner)" as Partner
-    actor "Quản trị viên (Admin)" as Admin
+graph LR
+    Guest((Khách tham quan))
+    Partner((Chủ quán))
+    Admin((Quản trị viên))
 
-    package "Hệ thống Food Map AI" {
-        usecase "Xem bản đồ & Tìm quán" as UC1
-        usecase "Nghe giới thiệu AI (Đa ngôn ngữ)" as UC2
-        usecase "Đăng nhập / Đăng ký" as UC3
-        usecase "Quản lý hồ sơ quán ăn" as UC4
-        usecase "Sử dụng AI (Dịch & TTS)" as UC5
-        usecase "Gửi yêu cầu phê duyệt" as UC6
-        usecase "Duyệt / Từ chối yêu cầu" as UC7
-        usecase "Quản lý người dùng" as UC8
-        usecase "Xem thống kê hệ thống" as UC9
-    }
+    subgraph "Hệ thống Food Map AI"
+        UC1(Xem bản đồ & Tìm quán)
+        UC2(Nghe giới thiệu AI)
+        UC3(Đăng nhập / Đăng ký)
+        UC4(Quản lý hồ sơ quán ăn)
+        UC5(Sử dụng AI - Dịch & TTS)
+        UC6(Gửi yêu cầu phê duyệt)
+        UC7(Duyệt / Từ chối yêu cầu)
+        UC8(Quản lý người dùng)
+        UC9(Xem thống kê hệ thống)
+    end
 
-    Guest --> UC1
-    Guest --> UC2
-    Guest --> UC3
+    Guest --- UC1
+    Guest --- UC2
+    Guest --- UC3
 
-    Partner --> UC3
-    Partner --> UC4
-    Partner --> UC5
-    Partner --> UC6
+    Partner --- UC3
+    Partner --- UC4
+    Partner --- UC5
+    Partner --- UC6
 
-    Admin --> UC3
-    Admin --> UC7
-    Admin --> UC8
-    Admin --> UC9
-    Admin --> UC1
+    Admin --- UC3
+    Admin --- UC7
+    Admin --- UC8
+    Admin --- UC9
+    Admin --- UC1
 ```
 
 ## 2. Mô tả các Tác nhân (Actors)
