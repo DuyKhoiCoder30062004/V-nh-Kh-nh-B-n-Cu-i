@@ -12,14 +12,19 @@ const DB_FILE = "./database.json";
 interface DbSchema {
   users: any[];
   restaurants: any[];
+  requests: any[];
 }
 
 async function getDb(): Promise<DbSchema> {
   try {
     const data = await fs.readFile(DB_FILE, "utf-8");
-    return JSON.parse(data);
+    const db = JSON.parse(data);
+    if (!db.requests) db.requests = [];
+    if (!db.restaurants) db.restaurants = [];
+    if (!db.users) db.users = [];
+    return db;
   } catch (error) {
-    const initialDb = { users: [], restaurants: [] };
+    const initialDb = { users: [], restaurants: [], requests: [] };
     await fs.writeFile(DB_FILE, JSON.stringify(initialDb, null, 2));
     return initialDb;
   }
@@ -50,9 +55,23 @@ async function startServer() {
     await saveDb(db);
   }
 
+  // Middleware xác thực
+  const authenticate = (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
+    const token = authHeader.split(" ")[1];
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded;
+      next();
+    } catch (err) {
+      res.status(401).json({ error: "Invalid token" });
+    }
+  };
+
   // API Routes
   app.post("/api/register", async (req, res) => {
-    const { username, password } = req.body;
+    const { username, password, role } = req.body;
     const db = await getDb();
     if (db.users.find(u => u.username === username)) {
       return res.status(400).json({ error: "Tên đăng nhập đã tồn tại!" });
@@ -64,7 +83,7 @@ async function startServer() {
         id: Date.now(),
         username,
         password: hashedPassword,
-        role: "app"
+        role: role || "app"
       });
       await saveDb(db);
       res.json({ message: "Đăng ký thành công!" });
@@ -80,7 +99,7 @@ async function startServer() {
     const safePassword = password.substring(0, 70);
     if (user && await bcrypt.compare(safePassword, user.password)) {
       const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
-      res.json({ message: "Đăng nhập thành công!", username: user.username, role: user.role, token });
+      res.json({ message: "Đăng nhập thành công!", id: user.id, username: user.username, role: user.role, token });
     } else {
       res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu!" });
     }
@@ -88,6 +107,10 @@ async function startServer() {
 
   app.get("/api/nearby", async (req, res) => {
     const db = await getDb();
+    const { ownerId } = req.query;
+    if (ownerId) {
+      return res.json(db.restaurants.filter(r => r.owner_id === parseInt(ownerId as string)));
+    }
     res.json(db.restaurants);
   });
 
@@ -96,10 +119,12 @@ async function startServer() {
     const total_users = db.users.filter(u => u.role === 'app').length;
     const total_restaurants = db.restaurants.length;
     const total_visits = total_users * 12 + 154;
+    const pending_requests = db.requests.filter(r => r.status === 'pending').length;
     res.json({
       total_users,
       total_restaurants,
-      total_visits
+      total_visits,
+      pending_requests
     });
   });
 
@@ -154,24 +179,33 @@ async function startServer() {
     res.json({ message: "User deleted successfully" });
   });
 
-  app.post("/api/restaurants", async (req, res) => {
+  app.post("/api/restaurants", authenticate, async (req: any, res) => {
     const r = req.body;
     const db = await getDb();
     db.restaurants.push({
       ...r,
-      id: Date.now()
+      id: Date.now(),
+      owner_id: req.user.role === 'admin' ? (r.owner_id || req.user.id) : req.user.id
     });
     await saveDb(db);
     res.json({ message: "Restaurant added successfully" });
   });
 
-  app.put("/api/restaurants/:id", async (req, res) => {
+  app.put("/api/restaurants/:id", authenticate, async (req: any, res) => {
     const { id } = req.params;
     const r = req.body;
     const db = await getDb();
     const index = db.restaurants.findIndex(rest => rest.id === parseInt(id));
     if (index !== -1) {
-      db.restaurants[index] = { ...r, id: parseInt(id) };
+      // Kiểm tra quyền sở hữu
+      if (req.user.role !== 'admin' && db.restaurants[index].owner_id !== req.user.id) {
+        return res.status(403).json({ error: "Bạn không có quyền sửa quán này!" });
+      }
+      db.restaurants[index] = { 
+        ...r, 
+        id: parseInt(id),
+        owner_id: db.restaurants[index].owner_id // Giữ nguyên chủ sở hữu
+      };
       await saveDb(db);
       res.json({ message: "Restaurant updated successfully" });
     } else {
@@ -179,12 +213,85 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/restaurants/:id", async (req, res) => {
+  // --- API REQUESTS (CHỜ DUYỆT) ---
+  app.get("/api/requests", authenticate, async (req: any, res) => {
+    const db = await getDb();
+    if (req.user.role === 'admin') {
+      res.json(db.requests);
+    } else {
+      res.json(db.requests.filter(r => r.owner_id === req.user.id));
+    }
+  });
+
+  app.post("/api/requests", authenticate, async (req: any, res) => {
+    const db = await getDb();
+    const request = {
+      ...req.body,
+      id: Date.now(),
+      owner_id: req.user.id,
+      owner_name: req.user.username,
+      status: 'pending',
+      created_at: new Date().toISOString()
+    };
+    db.requests.push(request);
+    await saveDb(db);
+    res.json({ message: "Yêu cầu đã được gửi và đang chờ duyệt!" });
+  });
+
+  app.post("/api/requests/:id/approve", authenticate, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const db = await getDb();
-    db.restaurants = db.restaurants.filter(rest => rest.id !== parseInt(id));
+    const reqIndex = db.requests.findIndex(r => r.id === parseInt(id));
+    if (reqIndex === -1) return res.status(404).json({ error: "Request not found" });
+
+    const requestData = db.requests[reqIndex];
+    
+    // Tìm xem quán này đã tồn tại chưa (để cập nhật) hoặc tạo mới
+    const restIndex = db.restaurants.findIndex(r => r.owner_id === requestData.owner_id);
+    
+    const restaurantData = {
+      name: requestData.name,
+      specialty_dish: requestData.specialty_dish,
+      image_url: requestData.image_url,
+      description: requestData.description,
+      description_en: requestData.description_en,
+      description_ko: requestData.description_ko,
+      description_zh: requestData.description_zh,
+      description_ja: requestData.description_ja,
+      audio_vi: requestData.audio_vi,
+      audio_en: requestData.audio_en,
+      audio_ko: requestData.audio_ko,
+      audio_zh: requestData.audio_zh,
+      audio_ja: requestData.audio_ja,
+      lat: requestData.lat,
+      lng: requestData.lng,
+      owner_id: requestData.owner_id
+    };
+
+    if (restIndex !== -1) {
+      db.restaurants[restIndex] = { ...restaurantData, id: db.restaurants[restIndex].id };
+    } else {
+      db.restaurants.push({ ...restaurantData, id: Date.now() });
+    }
+
+    db.requests[reqIndex].status = 'approved';
     await saveDb(db);
-    res.json({ message: "Restaurant deleted successfully" });
+    res.json({ message: "Đã duyệt yêu cầu thành công!" });
+  });
+
+  app.post("/api/requests/:id/reject", authenticate, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden" });
+    const { id } = req.params;
+    const db = await getDb();
+    const reqIndex = db.requests.findIndex(r => r.id === parseInt(id));
+    if (reqIndex !== -1) {
+      db.requests[reqIndex].status = 'rejected';
+      await saveDb(db);
+      res.json({ message: "Đã từ chối yêu cầu." });
+    } else {
+      res.status(404).json({ error: "Request not found" });
+    }
   });
 
   // Start listening immediately
