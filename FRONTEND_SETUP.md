@@ -43,11 +43,13 @@ For frontend development (React, TypeScript, Tailwind CSS), you have two primary
 Since your backend is now running on Python (FastAPI), you must ensure the frontend knows where to send requests.
 
 ### Update Axios Base URL
-In your `src/App.tsx` (or a dedicated `api.ts` file), set the base URL to match your FastAPI server (usually port 8000):
+In your `src/App.tsx`, you should set the base URL right after the import statements at the top of the file. This ensures every request made with `axios` automatically goes to your Python server.
 
+**In `src/App.tsx`:**
 ```typescript
 import axios from 'axios';
 
+// Add this line here (around line 3)
 axios.defaults.baseURL = 'http://localhost:8000';
 ```
 
