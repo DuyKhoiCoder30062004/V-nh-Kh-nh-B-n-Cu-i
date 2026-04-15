@@ -59,11 +59,21 @@ interface Restaurant {
   lng: number;
 }
 
+interface Plan {
+  id: string;
+  name: string;
+  max_pois: number;
+  max_langs: number;
+  price: string;
+}
+
 interface User {
   id: number;
   username: string;
   role: string;
   token?: string;
+  plan_id?: string;
+  plan?: Plan;
 }
 
 function MapController({ center }: { center: [number, number] }) {
@@ -102,7 +112,8 @@ export default function App() {
   const [usersList, setUsersList] = useState<User[]>([]);
   const [requestsList, setRequestsList] = useState<any[]>([]);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
-  const [newUserForm, setNewUserForm] = useState({ username: "", password: "", role: "app" });
+  const [newUserForm, setNewUserForm] = useState({ username: "", password: "", role: "app", plan_id: "basic" });
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [adminTestLang, setAdminTestLang] = useState("vi");
 
  
@@ -133,6 +144,7 @@ export default function App() {
         fetchStats();
         fetchUsers();
         fetchRequests();
+        fetchPlans();
       }
       if (authMode === "partner") {
         fetchRequests();
@@ -159,7 +171,14 @@ export default function App() {
       if (res.data.error) setAuthError(res.data.error);
       else {
         if (isLogin) {
-          const userData: User = { id: res.data.id, username: res.data.username, role: res.data.role, token: res.data.token };
+          const userData: User = { 
+            id: res.data.id, 
+            username: res.data.username, 
+            role: res.data.role, 
+            token: res.data.token,
+            plan_id: res.data.plan_id,
+            plan: res.data.plan
+          };
           setUser(userData); 
           localStorage.setItem("vinhkhanh_user", JSON.stringify(userData)); 
           if (userData.role === 'admin') setAuthMode("admin");
@@ -184,6 +203,7 @@ export default function App() {
   };
   const fetchStats = async () => { try { const res = await axios.get("/api/stats"); setStats(res.data); } catch(e){} };
   const fetchUsers = async () => { try { const res = await axios.get("/api/users"); setUsersList(Array.isArray(res.data) ? res.data : []); } catch(e){} };
+  const fetchPlans = async () => { try { const res = await axios.get("/api/plans"); setPlans(res.data); } catch(e){} };
   const fetchRequests = async () => { 
     try { 
       const res = await axios.get("/api/requests", {
@@ -199,6 +219,11 @@ export default function App() {
   // --- 5. HÀM MA THUẬT AI (Sử dụng Gemini API trực tiếp từ Frontend) ---
   const autoGenerateContent = async () => {
     if (!newRest.description) return alert("Vui lòng nhập Kịch bản Tiếng Việt trước!");
+    
+    // Kiểm tra giới hạn ngôn ngữ của gói
+    const userPlan = user?.plan;
+    const maxLangs = userPlan?.max_langs || 2;
+    
     setIsGeneratingAll(true);
     
     try {
@@ -221,35 +246,61 @@ export default function App() {
       // Cập nhật text trước để người dùng thấy
       setNewRest(prev => ({ ...prev, description_en: en, description_ko: ko, description_zh: zh, description_ja: ja }));
 
-      const generateTTS = async (text: string, lang: string, voice: string) => {
+      const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+      const generateTTS = async (text: string, lang: string, voice: string, retries = 5) => {
         console.log(`Đang tạo Audio [${lang}]...`);
-        try {
-          const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: `Say in ${lang}: ${text}` }] }],
-            config: {
-              responseModalities: [Modality.AUDIO],
-              speechConfig: {
-                  voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: voice },
-                  },
+        for (let i = 0; i < retries; i++) {
+          try {
+            const response = await ai.models.generateContent({
+              model: "gemini-2.5-flash-preview-tts",
+              contents: [{ parts: [{ text: `Say in ${lang}: ${text}` }] }],
+              config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: voice },
+                    },
+                },
               },
-            },
-          });
-          const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          return audioData || "";
-        } catch (e) {
-          console.error(`Lỗi TTS [${lang}]:`, e);
-          return "";
+            });
+            const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            return audioData || "";
+          } catch (e: any) {
+            const errorMsg = e.message || "";
+            console.error(`Lỗi TTS [${lang}] (Lần thử ${i + 1}):`, errorMsg);
+            
+            // Nếu lỗi 429 (Quota) hoặc 500/503, thử lại với Backoff mạnh hơn
+            if (i < retries - 1 && (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota") || errorMsg.includes("500"))) {
+              // Exponential backoff: 5s, 10s, 20s, 40s
+              const waitTime = Math.pow(2, i) * 5000; 
+              console.log(`⚠️ Hết hạn ngạch (Quota). Chờ ${waitTime/1000}s trước khi thử lại lần ${i + 2}...`);
+              await sleep(waitTime);
+              continue;
+            }
+            return "";
+          }
         }
+        return "";
       };
 
       // 2. Tạo Audio bằng Gemini TTS (Chạy tuần tự và gán trực tiếp để tránh mất dữ liệu)
       const audio_vi = await generateTTS(newRest.description, "Vietnamese", "Kore");
-      const audio_en = await generateTTS(en, "English", "Charon");
-      const audio_zh = await generateTTS(zh, "Chinese", "Zephyr");
-      const audio_ko = await generateTTS(ko, "Korean", "Fenrir");
-      const audio_ja = await generateTTS(ja, "Japanese", "Puck");
+      await sleep(3000); // Tăng thời gian chờ giữa các ngôn ngữ lên 3s
+      
+      let audio_en = "", audio_zh = "", audio_ko = "", audio_ja = "";
+      
+      if (maxLangs >= 2) {
+        audio_en = await generateTTS(en, "English", "Charon");
+        await sleep(3000);
+      }
+      if (maxLangs >= 5) {
+        audio_zh = await generateTTS(zh, "Chinese", "Zephyr");
+        await sleep(3000);
+        audio_ko = await generateTTS(ko, "Korean", "Fenrir");
+        await sleep(3000);
+        audio_ja = await generateTTS(ja, "Japanese", "Puck");
+      }
 
       setNewRest(prev => ({ 
         ...prev, 
@@ -257,7 +308,11 @@ export default function App() {
         audio_vi, audio_en, audio_zh, audio_ko, audio_ja 
       }));
 
-      alert("✅ Hoàn tất! Đã dịch và tạo thành công Audio bằng Gemini AI.");
+      if (maxLangs < 5) {
+        alert(`✅ Hoàn tất! Vì bạn đang dùng ${userPlan?.name}, AI chỉ tạo Audio cho ${maxLangs} ngôn ngữ chính.`);
+      } else {
+        alert("✅ Hoàn tất! Đã dịch và tạo thành công Audio cho tất cả ngôn ngữ.");
+      }
     } catch (err: any) { 
       console.error("AI Error:", err);
       alert("Lỗi từ Gemini: " + err.message); 
@@ -274,7 +329,9 @@ export default function App() {
       const endpoint = isPartner ? "/api/requests" : (editingId ? `/api/restaurants/${editingId}` : "/api/restaurants");
       const method = (editingId && !isPartner) ? axios.put : axios.post;
       
-      const res = await method(endpoint, newRest, {
+      const payload = isPartner && editingId && editingId !== -1 ? { ...newRest, restaurant_id: editingId } : newRest;
+
+      const res = await method(endpoint, payload, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       
@@ -348,7 +405,7 @@ export default function App() {
 
   const handleEditUserClick = (userItem: User) => {
     setEditingUserId(userItem.id);
-    setNewUserForm({ username: userItem.username, password: "", role: userItem.role }); 
+    setNewUserForm({ username: userItem.username, password: "", role: userItem.role, plan_id: userItem.plan_id || "basic" }); 
   };
 
   const handleDeleteUser = async (id: number, username: string) => {
@@ -383,233 +440,235 @@ export default function App() {
   };
 
   const handlePlayAudioForUser = (restaurant: Restaurant) => {
-    const langObj = LANGUAGES.find(l => l.code === language);
     const audioKey = `audio_${language}` as keyof Restaurant;
     const audioData = restaurant[audioKey] as string;
     if (audioData) playRawPCM(audioData);
     else alert("Xin lỗi, Audio cho ngôn ngữ này đang được cập nhật!");
   };
 
-  // ==========================================
-  // GIAO DIỆN 1: ĐĂNG NHẬP
-  // ==========================================
   if (authMode === "login" || authMode === "register") {
-    const isLogin = authMode === "login";
-    return (
-      <div style={{...styles.container, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e0f2f1'}}>
-        <div style={{...styles.card, padding: '30px', width: '100%', maxWidth: '400px'}}>
-          <h2 style={{textAlign: 'center', color: '#009688'}}> {isLogin ? "🔐 Đăng Nhập Bản Đồ" : "📝 Đăng Ký Tài Khoản"} </h2>
-          {authError && <div style={{color: 'red', background: '#ffebee', padding: '10px', borderRadius: '5px', marginBottom: '15px'}}>{authError}</div>}
-          <form onSubmit={(e) => handleAuth(e, isLogin)}>
-            <div style={{marginBottom: '15px'}}><label style={styles.label}>Tài khoản:</label><input required value={usernameInput} onChange={e => setUsernameInput(e.target.value)} style={styles.input} /></div>
-            <div style={{marginBottom: '20px'}}><label style={styles.label}>Mật khẩu:</label><input type="password" required value={passwordInput} onChange={e => setPasswordInput(e.target.value)} style={styles.input} /></div>
-            <button type="submit" style={styles.primaryBtn}>{isLogin ? "Vào Bản Đồ" : "Tạo Tài Khoản"}</button>
-          </form>
-          <div style={{textAlign: 'center', marginTop: '20px', fontSize: '14px'}}>
-            <span onClick={() => { setAuthMode(isLogin ? "register" : "login"); setAuthError(""); }} style={{color: '#009688', cursor: 'pointer', fontWeight: 'bold', textDecoration: 'underline'}}>{isLogin ? "Đăng ký ngay" : "Đăng nhập lại"}</span>
+      const isLogin = authMode === "login";
+      return (
+        <div style={{...styles.container, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e0f2f1'}}>
+          <div style={{...styles.card, padding: '30px', width: '100%', maxWidth: '400px'}}>
+            <h2 style={{textAlign: 'center', color: '#009688'}}> {isLogin ? "🔐 Đăng Nhập Bản Đồ" : "📝 Đăng Ký Tài Khoản"} </h2>
+            {authError && <div style={{color: 'red', background: '#ffebee', padding: '10px', borderRadius: '5px', marginBottom: '15px'}}>{authError}</div>}
+            <form onSubmit={(e) => handleAuth(e, isLogin)}>
+              <div style={{marginBottom: '15px'}}><label style={styles.label}>Tài khoản:</label><input required value={usernameInput} onChange={e => setUsernameInput(e.target.value)} style={styles.input} /></div>
+              <div style={{marginBottom: '20px'}}><label style={styles.label}>Mật khẩu:</label><input type="password" required value={passwordInput} onChange={e => setPasswordInput(e.target.value)} style={styles.input} /></div>
+              <button type="submit" style={styles.primaryBtn}>{isLogin ? "Vào Bản Đồ" : "Tạo Tài Khoản"}</button>
+            </form>
+            <div style={{textAlign: 'center', marginTop: '20px', fontSize: '14px'}}>
+              <span onClick={() => { setAuthMode(isLogin ? "register" : "login"); setAuthError(""); }} style={{color: '#009688', cursor: 'pointer', fontWeight: 'bold', textDecoration: 'underline'}}>{isLogin ? "Đăng ký ngay" : "Đăng nhập lại"}</span>
+            </div>
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  // ==========================================
-  // GIAO DIỆN 2.5: MERCHANT PORTAL (DÀNH CHO ĐỐI TÁC)
-  // ==========================================
-  if (authMode === "partner" && user?.role === "partner") {
-    const myRest = restaurants[0]; // Partner chỉ có 1 quán (theo logic lọc ở fetch)
+    // ==========================================
+    // GIAO DIỆN 2.5: MERCHANT PORTAL (DÀNH CHO ĐỐI TÁC)
+    // ==========================================
+    if (authMode === "partner" && user?.role === "partner") {
+      const myRests = restaurants.filter(r => r.owner_id === user.id);
+      const myPending = requestsList.filter(r => r.owner_id === user.id && r.status === 'pending');
+      const userPlan = user.plan;
 
-    return (
-      <div style={{fontFamily: 'Arial', background: '#f0f4f8', minHeight: '100vh', padding: '20px'}}>
-        <div style={{maxWidth: '800px', margin: '0 auto'}}>
-          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px'}}>
-            <div>
-              <h2 style={{color: '#00695c', margin: 0}}>🏪 Cổng Thông Tin Đối Tác</h2>
-              <p style={{margin: '5px 0 0 0', color: '#666'}}>Chào mừng, <strong>{user.username}</strong></p>
+      return (
+        <div style={{fontFamily: 'Arial', background: '#f0f4f8', minHeight: '100vh', padding: '20px'}}>
+          <div style={{maxWidth: '800px', margin: '0 auto'}}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px'}}>
+              <div>
+                <h2 style={{color: '#00695c', margin: 0}}>🏪 Cổng Thông Tin Đối Tác</h2>
+                <p style={{margin: '5px 0 0 0', color: '#666'}}>Chào mừng, <strong>{user.username}</strong></p>
+                <div style={{marginTop: '5px', fontSize: '12px', background: '#e0f2f1', padding: '4px 10px', borderRadius: '15px', display: 'inline-block', color: '#00796b', fontWeight: 'bold'}}>
+                  📦 Gói: {userPlan?.name} ({myRests.length + myPending.length} / {userPlan?.max_pois} POI)
+                </div>
+              </div>
+              <div style={{display: 'flex', gap: '10px'}}>
+                <button onClick={() => setAuthMode("app")} style={{padding: '10px 20px', background: '#009688', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>📍 Xem Bản Đồ</button>
+                <button onClick={handleLogout} style={{padding: '10px 20px', background: 'white', color: '#f44336', border: '1px solid #f44336', borderRadius: '8px', cursor: 'pointer'}}>Thoát</button>
+              </div>
             </div>
-            <div style={{display: 'flex', gap: '10px'}}>
-              <button onClick={() => setAuthMode("app")} style={{padding: '10px 20px', background: '#009688', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>📍 Xem Bản Đồ</button>
-              <button onClick={handleLogout} style={{padding: '10px 20px', background: 'white', color: '#f44336', border: '1px solid #f44336', borderRadius: '8px', cursor: 'pointer'}}>Thoát</button>
-            </div>
-          </div>
 
-          {!myRest && !editingId ? (
-            <div style={{...styles.card, padding: '40px', textAlign: 'center'}}>
-              <div style={{fontSize: '50px', marginBottom: '20px'}}>🍽️</div>
-              <h3>Bạn chưa có quán ăn nào trên hệ thống!</h3>
-              <p>Vui lòng nhấn nút bên dưới để bắt đầu tạo hồ sơ quán của bạn.</p>
-              <button 
-                onClick={() => setEditingId(-1)} 
-                style={{...styles.primaryBtn, maxWidth: '250px', margin: '20px auto'}}
-              >
-                ➕ Tạo Quán Ăn Ngay
-              </button>
-            </div>
-          ) : (
-            <>
-              {/* FORM CHỈNH SỬA DUY NHẤT 1 QUÁN */}
-              <div style={{...styles.card, padding: '25px', marginBottom: '30px', borderTop: '5px solid #009688'}}>
-                <h3 style={{marginTop: 0, marginBottom: '20px', borderBottom: '1px solid #eee', paddingBottom: '10px'}}>
-                  {myRest ? `📝 Quản Lý: ${myRest.name}` : "➕ Tạo Hồ Sơ Quán Ăn"}
-                </h3>
-                
-                <form onSubmit={handleSaveRestaurant}>
-                  <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px'}}>
-                    <div style={{gridColumn: '1 / -1'}}>
-                      <label style={styles.label}>Tên quán ăn của bạn (*)</label>
-                      <input required value={newRest.name} onChange={e=>setNewRest({...newRest, name: e.target.value})} style={styles.input} placeholder="Ví dụ: Ốc Đào Vĩnh Khánh" />
+            {myRests.length + myPending.length >= (userPlan?.max_pois || 1) && !editingId ? (
+              <div style={{...styles.card, padding: '20px', textAlign: 'center', background: '#fff3e0', border: '1px solid #ffb74d', marginBottom: '20px'}}>
+                <h4 style={{margin: 0, color: '#e65100'}}>⚠️ Đã đạt giới hạn quán ăn!</h4>
+                <p style={{fontSize: '13px', margin: '5px 0'}}>Gói <strong>{userPlan?.name}</strong> của bạn chỉ cho phép tối đa {userPlan?.max_pois} quán. Hãy liên hệ Admin để nâng cấp gói.</p>
+              </div>
+            ) : null}
+
+            {myRests.length === 0 && myPending.length === 0 && !editingId ? (
+              <div style={{...styles.card, padding: '40px', textAlign: 'center'}}>
+                <div style={{fontSize: '50px', marginBottom: '20px'}}>🍽️</div>
+                <h3>Bạn chưa có quán ăn nào trên hệ thống!</h3>
+                <p>Vui lòng nhấn nút bên dưới để bắt đầu tạo hồ sơ quán của bạn.</p>
+                <button 
+                  onClick={() => setEditingId(-1)} 
+                  style={{...styles.primaryBtn, maxWidth: '250px', margin: '20px auto'}}
+                >
+                  ➕ Tạo Quán Ăn Ngay
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* DANH SÁCH QUÁN CỦA PARTNER */}
+                <div style={{display: 'flex', gap: '15px', marginBottom: '20px', overflowX: 'auto', paddingBottom: '10px'}}>
+                  {myRests.map(r => (
+                    <div key={r.id} onClick={() => handleEditClick(r)} style={{
+                      minWidth: '200px', background: editingId === r.id ? '#e0f2f1' : 'white', 
+                      padding: '15px', borderRadius: '12px', cursor: 'pointer', border: editingId === r.id ? '2px solid #009688' : '1px solid #eee',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.05)'
+                    }}>
+                      <div style={{fontWeight: 'bold', marginBottom: '5px'}}>{r.name}</div>
+                      <div style={{fontSize: '12px', color: '#666'}}>{r.specialty_dish}</div>
                     </div>
-                    <div>
-                      <label style={styles.label}>Món đặc sản (*)</label>
-                      <input required value={newRest.specialty_dish} onChange={e=>setNewRest({...newRest, specialty_dish: e.target.value})} style={styles.input} placeholder="Ví dụ: Ốc hương trứng muối" />
+                  ))}
+                  {myRests.length + myPending.length < (userPlan?.max_pois || 1) && (
+                    <div onClick={() => {
+                      setEditingId(-1);
+                      setNewRest({ name: "", specialty_dish: "", image_url: "", description: "", description_en: "", description_ko: "", description_zh: "", description_ja: "", audio_vi: "", audio_en: "", audio_ko: "", audio_zh: "", audio_ja: "", lat: 10.7612, lng: 106.7055 });
+                    }} style={{
+                      minWidth: '150px', background: '#f5f5f5', border: '2px dashed #ccc',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px', cursor: 'pointer'
+                    }}>
+                      ➕ Thêm quán mới
                     </div>
-                    <div>
-                      <label style={styles.label}>Link Hình Ảnh</label>
-                      <input value={newRest.image_url} onChange={e=>setNewRest({...newRest, image_url: e.target.value})} style={styles.input} placeholder="Dán link ảnh tại đây..." />
-                    </div>
+                  )}
+                </div>
+
+                {/* FORM CHỈNH SỬA / TẠO MỚI */}
+                {(editingId || (myRests.length === 0 && myPending.length === 0)) && (
+                  <div style={{...styles.card, padding: '25px', marginBottom: '30px', borderTop: '5px solid #009688'}}>
+                    <h3 style={{marginTop: 0, marginBottom: '20px', borderBottom: '1px solid #eee', paddingBottom: '10px'}}>
+                      {editingId === -1 ? "➕ Tạo Hồ Sơ Quán Ăn Mới" : `📝 Quản Lý: ${newRest.name}`}
+                    </h3>
                     
-                    {/* KHU VỰC AI VOICE - TRỌNG TÂM CỦA PARTNER */}
-                    <div style={{gridColumn: '1 / -1', background: '#e0f2f1', padding: '20px', borderRadius: '12px', border: '1px solid #b2dfdb'}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                        <label style={{...styles.label, color: '#00796b', margin: 0}}>🎙️ Kịch bản giới thiệu & AI Voice (*)</label>
-                        <span style={{fontSize: '12px', color: '#00796b', background: '#b2dfdb', padding: '2px 8px', borderRadius: '10px'}}>Powered by Gemini AI</span>
-                      </div>
-                      <textarea 
-                        required 
-                        rows={4} 
-                        value={newRest.description} 
-                        onChange={e=>setNewRest({...newRest, description: e.target.value})} 
-                        style={{...styles.input, fontSize: '15px'}} 
-                        placeholder="Hãy nhập lời chào khách bằng tiếng Việt. AI sẽ tự động dịch sang 4 ngôn ngữ khác và tạo giọng đọc cho bạn!" 
-                      />
-                      
-                      <div style={{marginTop: '15px', display: 'flex', gap: '15px', alignItems: 'center', flexWrap: 'wrap'}}>
-                        <button 
-                          type="button" 
-                          onClick={autoGenerateContent} 
-                          disabled={isGeneratingAll} 
-                          style={{
-                            background: '#00796b', 
-                            color: 'white', 
-                            padding: '12px 25px', 
-                            border: 'none', 
-                            borderRadius: '8px', 
-                            fontWeight: 'bold', 
-                            cursor: 'pointer',
-                            boxShadow: '0 4px 12px rgba(0,121,107,0.3)',
-                            flex: '2 1 200px'
-                          }}
-                        >
-                          {isGeneratingAll ? "⏳ AI Đang Dịch & Tạo Giọng..." : "🪄 Kích Hoạt AI Ma Thuật"}
-                        </button>
-                        
-                        <div style={{display: 'flex', gap: '8px', flex: '1 1 200px'}}>
-                          <select 
-                            value={adminTestLang} 
-                            onChange={(e) => setAdminTestLang(e.target.value)}
-                            style={{padding: '10px', borderRadius: '8px', border: '1px solid #b2dfdb', flex: 1}}
-                          >
-                            {LANGUAGES.map(l => (
-                              <option key={l.code} value={l.code}>{l.flag} Nghe thử: {l.name}</option>
-                            ))}
-                          </select>
-                          <button 
-                            type="button" 
-                            onClick={() => {
-                              const audioKey = `audio_${adminTestLang}` as keyof typeof newRest;
-                              const audioData = newRest[audioKey] as string;
-                              if (audioData) playRawPCM(audioData);
-                              else alert("Vui lòng nhấn nút 'Kích Hoạt AI' trước để tạo âm thanh!");
-                            }} 
-                            style={{
-                              background: '#ff9800', 
-                              color: 'white', 
-                              border: 'none', 
-                              padding: '10px 15px', 
-                              borderRadius: '8px', 
-                              cursor: 'pointer',
-                              fontWeight: 'bold'
-                            }}
-                          >
-                            ▶️ Phát
-                          </button>
+                    <form onSubmit={handleSaveRestaurant}>
+                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px'}}>
+                        <div style={{gridColumn: '1 / -1'}}>
+                          <label style={styles.label}>Tên quán ăn của bạn (*)</label>
+                          <input required value={newRest.name} onChange={e=>setNewRest({...newRest, name: e.target.value})} style={styles.input} placeholder="Ví dụ: Ốc Đào Vĩnh Khánh" />
                         </div>
-                      </div>
-                    </div>
-
-                    {/* HIỂN THỊ TRẠNG THÁI CÁC NGÔN NGỮ */}
-                    <div style={{gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px'}}>
-                      {LANGUAGES.map(l => {
-                        const hasAudio = (newRest as any)[`audio_${l.code}`];
-                        return (
-                          <div key={l.code} style={{background: 'white', padding: '10px', borderRadius: '8px', border: '1px solid #eee', textAlign: 'center'}}>
-                            <div style={{fontSize: '20px'}}>{l.flag}</div>
-                            <div style={{fontSize: '12px', fontWeight: 'bold'}}>{l.name}</div>
-                            <div style={{fontSize: '10px', color: hasAudio ? '#4CAF50' : '#f44336'}}>
-                              {hasAudio ? "● Đã sẵn sàng" : "○ Chưa có audio"}
+                        <div>
+                          <label style={styles.label}>Món đặc sản (*)</label>
+                          <input required value={newRest.specialty_dish} onChange={e=>setNewRest({...newRest, specialty_dish: e.target.value})} style={styles.input} placeholder="Ví dụ: Ốc hương trứng muối" />
+                        </div>
+                        <div>
+                          <label style={styles.label}>Link Hình Ảnh</label>
+                          <input value={newRest.image_url} onChange={e=>setNewRest({...newRest, image_url: e.target.value})} style={styles.input} placeholder="Dán link ảnh tại đây..." />
+                        </div>
+                        
+                        {/* KHU VỰC AI VOICE */}
+                        <div style={{gridColumn: '1 / -1', background: '#e0f2f1', padding: '20px', borderRadius: '12px', border: '1px solid #b2dfdb'}}>
+                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
+                            <label style={{...styles.label, color: '#00796b', margin: 0}}>🎙️ Kịch bản giới thiệu & AI Voice (*)</label>
+                            <span style={{fontSize: '12px', color: '#00796b', background: '#b2dfdb', padding: '2px 8px', borderRadius: '10px'}}>Powered by Gemini AI</span>
+                          </div>
+                          <textarea 
+                            required 
+                            rows={4} 
+                            value={newRest.description} 
+                            onChange={e=>setNewRest({...newRest, description: e.target.value})} 
+                            style={{...styles.input, fontSize: '15px'}} 
+                            placeholder="Hãy nhập lời chào khách bằng tiếng Việt. AI sẽ tự động dịch sang các ngôn ngữ khác!" 
+                          />
+                          
+                          <div style={{marginTop: '15px', display: 'flex', gap: '15px', alignItems: 'center', flexWrap: 'wrap'}}>
+                            <button 
+                              type="button" 
+                              onClick={autoGenerateContent} 
+                              disabled={isGeneratingAll} 
+                              style={{
+                                background: '#00796b', 
+                                color: 'white', 
+                                padding: '12px 25px', 
+                                border: 'none', 
+                                borderRadius: '8px', 
+                                fontWeight: 'bold', 
+                                cursor: 'pointer',
+                                boxShadow: '0 4px 12px rgba(0,121,107,0.3)',
+                                flex: '2 1 200px'
+                              }}
+                            >
+                              {isGeneratingAll ? "⏳ AI Đang Xử Lý..." : "🪄 Kích Hoạt AI Ma Thuật"}
+                            </button>
+                            
+                            <div style={{display: 'flex', gap: '8px', flex: '1 1 200px'}}>
+                              <select 
+                                value={adminTestLang} 
+                                onChange={(e) => setAdminTestLang(e.target.value)}
+                                style={{padding: '10px', borderRadius: '8px', border: '1px solid #b2dfdb', flex: 1}}
+                              >
+                                {LANGUAGES.map(l => {
+                                  const isAllowed = (userPlan?.max_langs || 2) >= 5 || l.code === 'vi' || l.code === 'en';
+                                  return (
+                                    <option key={l.code} value={l.code} disabled={!isAllowed}>
+                                      {l.flag} {l.name} {!isAllowed && "(Cần nâng cấp gói)"}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                              <button 
+                                type="button" 
+                                onClick={() => {
+                                  const audioKey = `audio_${adminTestLang}` as keyof typeof newRest;
+                                  const audioData = newRest[audioKey] as string;
+                                  if (audioData) playRawPCM(audioData);
+                                  else alert("Vui lòng nhấn nút 'Kích Hoạt AI' trước!");
+                                }} 
+                                style={{ background: '#ff9800', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+                              >
+                                ▶️ Phát
+                              </button>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div style={{marginTop: '30px', display: 'flex', gap: '15px'}}>
-                    <button type="submit" style={{...styles.primaryBtn, flex: 2, height: '50px', fontSize: '16px'}}>
-                      💾 Cập Nhật Thông Tin Lên Bản Đồ
-                    </button>
-                    {myRest && (
-                      <button 
-                        type="button" 
-                        onClick={() => handleEditClick(myRest)} 
-                        style={{flex: 1, background: 'white', border: '1px solid #ccc', borderRadius: '8px', cursor: 'pointer'}}
-                      >
-                        🔄 Hoàn tác
-                      </button>
-                    )}
-                  </div>
-                </form>
-              </div>
-
-              {/* THÔNG TIN VỊ TRÍ (CHỈ ĐỌC) */}
-              <div style={{...styles.card, padding: '20px', background: '#fff9c4', border: '1px solid #fbc02d'}}>
-                <h4 style={{margin: '0 0 10px 0'}}>📍 Vị trí của bạn trên bản đồ</h4>
-                <p style={{margin: 0, fontSize: '13px', color: '#7f6d00'}}>
-                  Tọa độ hiện tại: <strong>{myRest?.lat}, {myRest?.lng}</strong>. 
-                  <br/>* Để thay đổi vị trí chính xác, vui lòng liên hệ Admin để được hỗ trợ kỹ thuật.
-                </p>
-              </div>
-              {/* TRẠNG THÁI YÊU CẦU */}
-              <div style={{...styles.card, padding: '20px', marginBottom: '30px'}}>
-                <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>📊 Trạng Thái Yêu Cầu Của Bạn</h3>
-                {requestsList.length === 0 ? (
-                  <p style={{fontSize: '13px', color: '#666'}}>Bạn chưa gửi yêu cầu nào.</p>
-                ) : (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
-                    {requestsList.slice(0, 5).map(req => (
-                      <div key={req.id} style={{display: 'flex', justifyContent: 'space-between', padding: '10px', background: '#f9f9f9', borderRadius: '5px'}}>
-                        <span style={{fontSize: '13px'}}>{req.name} ({new Date(req.created_at).toLocaleDateString()})</span>
-                        <span style={{
-                          fontSize: '11px', 
-                          fontWeight: 'bold', 
-                          padding: '2px 8px', 
-                          borderRadius: '10px',
-                          background: req.status === 'approved' ? '#e8f5e9' : (req.status === 'pending' ? '#fff3e0' : '#ffebee'),
-                          color: req.status === 'approved' ? '#2e7d32' : (req.status === 'pending' ? '#e65100' : '#c62828')
-                        }}>
-                          {req.status === 'approved' ? "Đã Duyệt" : (req.status === 'pending' ? "Chờ Duyệt" : "Từ Chối")}
-                        </span>
+                        </div>
                       </div>
-                    ))}
+
+                      <div style={{marginTop: '30px', display: 'flex', gap: '15px'}}>
+                        <button type="submit" style={{...styles.primaryBtn, flex: 2, height: '50px', fontSize: '16px'}}>
+                          {editingId === -1 ? "🚀 Gửi Yêu Cầu Tạo Quán" : "💾 Cập Nhật Thông Tin"}
+                        </button>
+                        {editingId !== -1 && (
+                          <button type="button" onClick={() => setEditingId(null)} style={{flex: 1, background: 'white', border: '1px solid #ccc', borderRadius: '8px', cursor: 'pointer'}}>Hủy</button>
+                        )}
+                      </div>
+                    </form>
                   </div>
                 )}
-              </div>
-            </>
-          )}
+
+                {/* TRẠNG THÁI YÊU CẦU */}
+                <div style={{...styles.card, padding: '20px', marginBottom: '30px'}}>
+                  <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>📊 Trạng Thái Yêu Cầu Của Bạn</h3>
+                  {requestsList.length === 0 ? (
+                    <p style={{fontSize: '13px', color: '#666'}}>Bạn chưa gửi yêu cầu nào.</p>
+                  ) : (
+                    <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
+                      {requestsList.filter(r => r.owner_id === user.id).slice(0, 5).map(req => (
+                        <div key={req.id} style={{display: 'flex', justifyContent: 'space-between', padding: '10px', background: '#f9f9f9', borderRadius: '5px'}}>
+                          <span style={{fontSize: '13px'}}>{req.name} ({new Date(req.created_at).toLocaleDateString()})</span>
+                          <span style={{
+                            fontSize: '11px', 
+                            fontWeight: 'bold', 
+                            padding: '2px 8px', 
+                            borderRadius: '10px',
+                            background: req.status === 'approved' ? '#e8f5e9' : (req.status === 'pending' ? '#fff3e0' : '#ffebee'),
+                            color: req.status === 'approved' ? '#2e7d32' : (req.status === 'pending' ? '#e65100' : '#c62828')
+                          }}>
+                            {req.status === 'approved' ? "Đã Duyệt" : (req.status === 'pending' ? "Chờ Duyệt" : "Từ Chối")}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
   // ==========================================
   // GIAO DIỆN 2: TRANG QUẢN TRỊ ADMIN (CMS)
@@ -801,6 +860,16 @@ export default function App() {
                         <option value="admin">admin (Quản trị viên)</option>
                       </select>
                     </div>
+                    {newUserForm.role === 'partner' && (
+                      <div>
+                        <label style={styles.label}>Gói dịch vụ</label>
+                        <select value={newUserForm.plan_id} onChange={e=>setNewUserForm({...newUserForm, plan_id: e.target.value})} style={{...styles.input, padding: '9px'}}>
+                          {plans.map(p => (
+                            <option key={p.id} value={p.id}>{p.name} ({p.max_pois} POI, {p.max_langs} Lang)</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                   <div style={{marginTop: '15px', display: 'flex', gap: '10px'}}>
                     <button type="submit" style={{...styles.primaryBtn, background: editingUserId ? '#9c27b0' : '#2196F3'}}>
@@ -820,6 +889,7 @@ export default function App() {
                       <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>ID</th>
                       <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Tài khoản</th>
                       <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Quyền hạn</th>
+                      <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Gói / Plan</th>
                       <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Thao tác</th>
                     </tr>
                   </thead>
@@ -832,6 +902,13 @@ export default function App() {
                           <span style={{background: u.role === 'admin' ? '#ffebee' : '#e8f5e9', color: u.role === 'admin' ? '#c62828' : '#2e7d32', padding: '3px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold'}}>
                             {u.role.toUpperCase()}
                           </span>
+                        </td>
+                        <td style={{padding: '10px'}}>
+                          {u.role === 'partner' && (
+                            <span style={{fontSize: '12px', color: '#666'}}>
+                              {plans.find(p => p.id === u.plan_id)?.name || u.plan_id}
+                            </span>
+                          )}
                         </td>
                         <td style={{padding: '10px'}}>
                           <button onClick={() => handleEditUserClick(u)} style={{marginRight: '5px', padding: '5px 10px', background: '#9c27b0', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer'}}>Sửa</button>

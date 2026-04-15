@@ -13,7 +13,14 @@ interface DbSchema {
   users: any[];
   restaurants: any[];
   requests: any[];
+  plans: any[];
 }
+
+const DEFAULT_PLANS = [
+  { id: "basic", name: "Gói Cơ Bản", max_pois: 1, max_langs: 2, price: "Miễn phí" },
+  { id: "pro", name: "Gói Chuyên Nghiệp", max_pois: 5, max_langs: 5, price: "500.000đ/tháng" },
+  { id: "enterprise", name: "Gói Doanh Nghiệp", max_pois: 20, max_langs: 5, price: "2.000.000đ/tháng" }
+];
 
 async function getDb(): Promise<DbSchema> {
   try {
@@ -22,9 +29,10 @@ async function getDb(): Promise<DbSchema> {
     if (!db.requests) db.requests = [];
     if (!db.restaurants) db.restaurants = [];
     if (!db.users) db.users = [];
+    if (!db.plans) db.plans = DEFAULT_PLANS;
     return db;
   } catch (error) {
-    const initialDb = { users: [], restaurants: [], requests: [] };
+    const initialDb = { users: [], restaurants: [], requests: [], plans: DEFAULT_PLANS };
     await fs.writeFile(DB_FILE, JSON.stringify(initialDb, null, 2));
     return initialDb;
   }
@@ -71,7 +79,7 @@ async function startServer() {
 
   // API Routes
   app.post("/api/register", async (req, res) => {
-    const { username, password, role } = req.body;
+    const { username, password, role, plan_id } = req.body;
     const db = await getDb();
     if (db.users.find(u => u.username === username)) {
       return res.status(400).json({ error: "Tên đăng nhập đã tồn tại!" });
@@ -83,7 +91,8 @@ async function startServer() {
         id: Date.now(),
         username,
         password: hashedPassword,
-        role: role || "app"
+        role: role || "app",
+        plan_id: plan_id || "basic"
       });
       await saveDb(db);
       res.json({ message: "Đăng ký thành công!" });
@@ -98,8 +107,16 @@ async function startServer() {
     const user = db.users.find(u => u.username === username);
     const safePassword = password.substring(0, 70);
     if (user && await bcrypt.compare(safePassword, user.password)) {
-      const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
-      res.json({ message: "Đăng nhập thành công!", id: user.id, username: user.username, role: user.role, token });
+      const plan = db.plans.find(p => p.id === (user.plan_id || "basic"));
+      const token = jwt.sign({ id: user.id, username: user.username, role: user.role, plan_id: user.plan_id || "basic" }, JWT_SECRET);
+      res.json({ 
+        message: "Đăng nhập thành công!", 
+        id: user.id, 
+        username: user.username, 
+        role: user.role, 
+        token,
+        plan: plan || DEFAULT_PLANS[0]
+      });
     } else {
       res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu!" });
     }
@@ -130,12 +147,17 @@ async function startServer() {
 
   app.get("/api/users", async (req, res) => {
     const db = await getDb();
-    const users = db.users.map(u => ({ id: u.id, username: u.username, role: u.role }));
+    const users = db.users.map(u => ({ 
+      id: u.id, 
+      username: u.username, 
+      role: u.role, 
+      plan_id: u.plan_id || "basic" 
+    }));
     res.json(users);
   });
 
   app.post("/api/users", async (req, res) => {
-    const { username, password, role } = req.body;
+    const { username, password, role, plan_id } = req.body;
     const db = await getDb();
     if (db.users.find(u => u.username === username)) {
       return res.status(400).json({ error: "Tên đăng nhập đã tồn tại!" });
@@ -146,7 +168,8 @@ async function startServer() {
       id: Date.now(),
       username,
       password: hashedPassword,
-      role
+      role,
+      plan_id: plan_id || "basic"
     });
     await saveDb(db);
     res.json({ message: "User created successfully" });
@@ -154,12 +177,13 @@ async function startServer() {
 
   app.put("/api/users/:id", async (req, res) => {
     const { id } = req.params;
-    const { username, password, role } = req.body;
+    const { username, password, role, plan_id } = req.body;
     const db = await getDb();
     const userIndex = db.users.findIndex(u => u.id === parseInt(id));
     if (userIndex !== -1) {
       db.users[userIndex].username = username;
       db.users[userIndex].role = role;
+      db.users[userIndex].plan_id = plan_id || db.users[userIndex].plan_id || "basic";
       if (password) {
         const safePassword = password.substring(0, 70);
         db.users[userIndex].password = await bcrypt.hash(safePassword, 10);
@@ -223,8 +247,25 @@ async function startServer() {
     }
   });
 
+  app.get("/api/plans", async (req, res) => {
+    const db = await getDb();
+    res.json(db.plans);
+  });
+
   app.post("/api/requests", authenticate, async (req: any, res) => {
     const db = await getDb();
+    
+    // Kiểm tra giới hạn gói dịch vụ
+    const user = db.users.find(u => u.id === req.user.id);
+    const plan = db.plans.find(p => p.id === (user?.plan_id || "basic"));
+    const myPois = db.restaurants.filter(r => r.owner_id === req.user.id);
+    const myPendingRequests = db.requests.filter(r => r.owner_id === req.user.id && r.status === 'pending');
+    
+    // Nếu là tạo mới (không có restaurant_id), kiểm tra giới hạn
+    if (!req.body.restaurant_id && myPois.length + myPendingRequests.length >= plan.max_pois) {
+      return res.status(403).json({ error: `Gói ${plan.name} của bạn chỉ cho phép tối đa ${plan.max_pois} quán ăn!` });
+    }
+
     const request = {
       ...req.body,
       id: Date.now(),
@@ -248,7 +289,10 @@ async function startServer() {
     const requestData = db.requests[reqIndex];
     
     // Tìm xem quán này đã tồn tại chưa (để cập nhật) hoặc tạo mới
-    const restIndex = db.restaurants.findIndex(r => r.owner_id === requestData.owner_id);
+    let restIndex = -1;
+    if (requestData.restaurant_id) {
+      restIndex = db.restaurants.findIndex(r => r.id === requestData.restaurant_id);
+    }
     
     const restaurantData = {
       name: requestData.name,
