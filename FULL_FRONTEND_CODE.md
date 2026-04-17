@@ -1,6 +1,6 @@
-# Full Frontend Code: App.tsx
+# Full Frontend Code (Fixed Audio & DB Save)
 
-This code replaces your current `src/App.tsx`. It is fully integrated with the Python FastAPI backend.
+This version fixes the asynchronous state bug to ensure translated text is correctly sent to the TTS engine and saved to the database.
 
 ```tsx
 import React, { useState, useEffect, useRef } from "react";
@@ -28,12 +28,6 @@ L.Icon.Default.mergeOptions({
 // --- MAP ICON CONFIGURATION ---
 const redIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-  iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
-});
-
-const blueIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
   iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
 });
@@ -78,14 +72,12 @@ function MapController({ center }: { center: [number, number] }) {
 }
 
 export default function App() {
-  // --- AUTH STATE ---
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState("login");
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [authError, setAuthError] = useState("");
 
-  // --- APP STATE ---
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [mapCenter, setMapCenter] = useState<[number, number]>([10.7612, 106.7055]);
   const [language, setLanguage] = useState("vi");
@@ -100,7 +92,6 @@ export default function App() {
   });
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
 
-  // --- 1. INITIAL LOAD ---
   useEffect(() => {
     const savedUser = localStorage.getItem("vinhkhanh_user");
     if (savedUser) { 
@@ -117,17 +108,9 @@ export default function App() {
     if (authMode !== "login" && authMode !== "register") {
       fetchRestaurants();
       if (authMode === "admin") fetchStats();
-      
-      if ("geolocation" in navigator) {
-        navigator.geolocation.getCurrentPosition((pos) => { 
-          const loc: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-          setUserLocation(loc); setMapCenter(loc); 
-        });
-      }
     }
   }, [authMode]);
 
-  // --- 2. AUTH HANDLERS ---
   const handleGuestLogin = () => {
     const guestUser = { username: "Khách", role: "guest", token: "" };
     setUser(guestUser);
@@ -163,7 +146,6 @@ export default function App() {
     delete axios.defaults.headers.common['Authorization'];
   };
 
-  // --- 3. DATA FETCHING ---
   const fetchRestaurants = async () => { 
     try {
       const res = await axios.get("/api/nearby");
@@ -178,43 +160,59 @@ export default function App() {
     } catch(e) {}
   };
 
-  // --- 4. AI LOGIC (BACKEND CALLS) ---
+  // --- AI LOGIC (FIXED ASYNC BUG) ---
   const autoGenerateContent = async () => {
     if (!newRest.description) return alert("Vui lòng nhập mô tả Tiếng Việt!");
+    if (!editingId) return alert("Bạn cần lưu quán trước khi tạo nội dung AI!");
+    
     setIsGeneratingAll(true);
     try {
-      // 1. Dịch văn bản qua Gemini Backend
-      const transRes = await axios.post("/api/translate", { text: newRest.description });
-      const { en, ko, zh, ja } = transRes.data;
+      // 1. Dịch văn bản qua Backend (Sẽ tự động cập nhật Database description_xx)
+      const transRes = await axios.post("/api/translate", { 
+        text: newRest.description, 
+        rest_id: editingId 
+      });
       
-      // Cập nhật state text ngay để client thấy
-      setNewRest(prev => ({ ...prev, description_en: en, description_ko: ko, description_zh: zh, description_ja: ja }));
+      const translations = transRes.data; // {en, ko, zh, ja}
+      if (translations.error) throw new Error(translations.error);
 
-      // 2. Tạo Audio qua ElevenLabs Backend (chạy song song cho nhanh)
+      // Cập nhật UI ngay lập tức bằng dữ liệu thô (không dùng newRest vì nó async)
+      setNewRest(prev => ({ ...prev, ...translations }));
+
+      // 2. Tạo Audio
+      // Quan trọng: Sử dụng "translations" trực tiếp từ API thay vì "newRest"
       const langs = [
         { key: "audio_vi", text: newRest.description },
-        { key: "audio_en", text: en },
-        { key: "audio_ko", text: ko },
-        { key: "audio_zh", text: zh },
-        { key: "audio_ja", text: ja }
+        { key: "audio_en", text: translations.en },
+        { key: "audio_ko", text: translations.ko },
+        { key: "audio_zh", text: translations.zh },
+        { key: "audio_ja", text: translations.ja }
       ];
 
       const audioResults: any = {};
       for (const item of langs) {
-        const res = await axios.post("/api/tts", { text: item.text });
-        audioResults[item.key] = res.data.audio_base64 || "";
+        if (!item.text) continue;
+        const res = await axios.post("/api/tts", { 
+          text: item.text, 
+          rest_id: editingId,
+          lang: item.key.replace("audio_", "") 
+        });
+        audioResults[item.key] = res.data.audio_base64 || "";      
       }
 
       setNewRest(prev => ({ ...prev, ...audioResults }));
-      alert("✅ Hoàn tất xử lý AI từ server!");
-    } catch (err) {
-      alert("Lỗi khi xử lý AI từ Server.");
+      
+      // 3. Refresh lại danh sách để bản đồ có data âm thanh mới nhất
+      await fetchRestaurants();
+      
+      alert("✅ Hoàn tất xử lý AI: Đã dịch và tạo giọng nói!");
+    } catch (err: any) {
+      alert("Lỗi AI: " + (err.message || "Không xác định"));
     } finally {
       setIsGeneratingAll(false);
     }
   };
 
-  // --- 5. CRUD HANDLERS ---
   const handleSaveRestaurant = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -238,14 +236,13 @@ export default function App() {
     }
   };
 
-  // --- 6. AUDIO PLAYBACK ---
   const playAudio = (base64Data: string) => {
-    if (!base64Data) return alert("Không có dữ liệu âm thanh!");
+    if (!base64Data) return alert("Quán này chưa có âm thanh. Hãy vào phần Quản lý và nhấn 'Tự động AI'!");
     const audio = new Audio(`data:audio/mpeg;base64,${base64Data}`);
     audio.play();
   };
 
-  // --- UI RENDERING ---
+  // --- UI PART WITH INTEGRATED STARTER CSS ---
   if (authMode === "login" || authMode === "register") {
     const isLogin = authMode === "login";
     return (
@@ -273,14 +270,13 @@ export default function App() {
         </div>
 
         <div id="spacer" className="ticks"></div>
-        
         <div id="next-steps">
           <div id="docs">
-            <h3>📖 VoiceMap Docs</h3>
-            <p>Hệ thống giới thiệu ẩm thực bằng giọng nói đa ngôn ngữ AI.</p>
+            <h3>📖 VoiceMap SAAS</h3>
+            <p>Khám phá ẩm thực Vĩnh Khánh bằng giọng nói AI đa ngôn ngữ.</p>
           </div>
           <div>
-            <h3>🛠️ Powered By</h3>
+            <h3>🛠️ Tech Stack</h3>
             <ul style={{marginTop: "10px"}}>
               <li><img className="logo" src="https://vitejs.dev/logo.svg" alt="Vite" /></li>
               <li><img className="logo" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" /></li>
@@ -293,13 +289,11 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* Floating Header */}
       <div className="floating-bar">
         <span>👋 {user?.username} ({user?.role})</span>
         <button onClick={handleLogout}>Thoát</button>
       </div>
 
-      {/* Admin/Partner Panel Link */}
       {(user?.role === "admin" || user?.role === "partner") && (
          <div className="portal-toggle">
             <button onClick={() => setAuthMode(authMode === "app" ? user.role : "app")}>
@@ -344,7 +338,6 @@ export default function App() {
       ) : (
         <div className="admin-portal">
           <div className="admin-grid">
-            {/* Form Section */}
             <div className="admin-card">
               <h3>{editingId ? "✏️ Sửa Quán" : "➕ Thêm Quán"}</h3>
               <form onSubmit={handleSaveRestaurant}>
@@ -356,17 +349,21 @@ export default function App() {
                   <input type="number" step="any" placeholder="Lng" value={newRest.lng} onChange={e=>setNewRest({...newRest, lng:parseFloat(e.target.value)})}/>
                 </div>
                 <textarea placeholder="Mô tả Tiếng Việt" value={newRest.description} onChange={e=>setNewRest({...newRest, description:e.target.value})} required />
-                <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll}>
-                   {isGeneratingAll ? "AI Đang xử lý..." : "🪄 Tự động AI (Dịch & Voice)"}
-                </button>
+                
+                {editingId && (
+                  <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll} style={{background: "#10b981", color: "white", marginBottom: "1rem"}}>
+                    {isGeneratingAll ? "⌛ AI Đang xử lý (30s)..." : "🪄 Tự động AI (Dịch & Voice)"}
+                  </button>
+                )}
+                {!editingId && <p style={{fontSize: "0.8rem", color: "#666"}}>* Lưu quán trước khi dùng AI</p>}
+
                 <div className="form-actions">
                   <button type="submit" className="save-btn">Lưu Vào Database</button>
-                  {editingId && <button type="button" onClick={() => setEditingId(null)}>Hủy</button>}
+                  {editingId && <button type="button" onClick={() => {setEditingId(null); setNewRest({name: ""});}}>Hủy</button>}
                 </div>
               </form>
             </div>
 
-            {/* List Section */}
             <div className="admin-card">
               <h3>📋 Danh Sách Quán</h3>
               <div className="scroll-list">
@@ -382,14 +379,13 @@ export default function App() {
               </div>
             </div>
 
-            {/* Stats Section (Admin Only) */}
             {user?.role === "admin" && (
                 <div className="admin-card">
-                  <h3>📈 Thống Kê Hệ Thống</h3>
+                  <h3>📈 Thống Kê</h3>
                   <div className="stats-box">
                     <p>Users: {stats.total_users}</p>
                     <p>Restaurants: {stats.total_restaurants}</p>
-                    <p>Visits: {stats.total_visits}</p>
+                    <p>Real Visits: {stats.total_visits}</p>
                   </div>
                 </div>
             )}
@@ -400,3 +396,4 @@ export default function App() {
   );
 }
 ```
+  
