@@ -1,47 +1,62 @@
-# Implementation Guide: Local Machine Setup
+# Guide: Running the App on Your Local Machine
 
-Follow these steps to get your Python backend and React frontend running together on your local machine (PyCharm + VS Code).
+To run the application, you need to have **three parts** active at the same time: the Database, the Python Backend, and the React Frontend.
 
-## Step 1: Database Setup (PostgreSQL)
-1.  Install **PostgreSQL** and **pgAdmin 4**.
-2.  Create a database named `vinhkhanh_db`.
-3.  **CRITICAL:** Enable PostGIS by running this SQL command in pgAdmin:
-    ```sql
-    CREATE EXTENSION postgis;
-    ```
-4.  Create the `users` and `restaurants` tables (see `DATABASE_POSTGRES_SETUP.md` for the SQL code).
+## Step 1: Start the Database (PostgreSQL)
+Ensure your PostgreSQL service is running on your computer.
+1.  Open **pgAdmin 4**.
+2.  Ensure you have run the SQL commands from `PYTHON_BACKEND_SETUP.md` to create the `users` and `restaurants` tables.
+3.  Check that the `DB_CONFIG` in your `main.py` matches your local Postgres password.
 
-## Step 2: Backend Setup (PyCharm)
-1.  Open your backend folder in PyCharm.
-2.  Create a virtual environment (`venv`).
-3.  Install dependencies:
+---
+
+## Step 2: Start the Python Backend
+Open a terminal (Command Prompt, PowerShell, or VS Code Terminal) and follow these steps:
+
+1.  **Navigate to your backend folder**:
     ```bash
-    pip install fastapi uvicorn psycopg2-binary passlib[bcrypt] pyjwt python-dotenv requests
+    cd path/to/your/backend
     ```
-4.  Create a `.env` file and add your `ELEVENLABS_API_KEY` and `GEMINI_API_KEY`.
-5.  Update the `DB_CONFIG` in your Python file with your actual PostgreSQL password.
-6.  Run the server:
+2.  **Activate your virtual environment** (optional but recommended):
     ```bash
-    uvicorn main:app --reload --port 8000
+    # On Windows
+    venv\Scripts\activate
+    # On Mac/Linux
+    source venv/bin/activate
     ```
+3.  **Run the server**:
+    ```bash
+    python main.py
+    ```
+    *You should see a message saying: `INFO: Uvicorn running on http://0.0.0.0:8000`.*
 
-## Step 3: Frontend Setup (VS Code)
-1.  Open the `applet` folder in VS Code.
-2.  Install dependencies:
+---
+
+## Step 3: Start the React Frontend
+Open a **NEW** terminal window (do not close the backend terminal).
+
+1.  **Navigate to your frontend folder**:
+    ```bash
+    cd path/to/your/frontend
+    ```
+2.  **Install dependencies** (if you haven't yet):
     ```bash
     npm install
     ```
-3.  **Apply Code Changes:** Follow the instructions in `FRONTEND_CHANGES_LOG.md` to update `src/App.tsx`.
-    *   Set `axios.defaults.baseURL`.
-    *   Replace direct AI SDK calls with backend API calls.
-    *   Update audio playback to handle Base64 strings.
-4.  Run the frontend:
+3.  **Run the development server**:
     ```bash
     npm run dev
     ```
+    *You should see a link like: `Local: http://localhost:3000/`.*
 
-## Step 4: Verification
-1.  Open `http://localhost:3000` in your browser.
-2.  Try registering a new account.
-3.  Check pgAdmin to see if the user appeared in the `users` table.
-4.  Try adding a restaurant and verify the PostGIS `location` column is populated.
+---
+
+## Step 4: Verify the Connection
+1.  Open your browser to `http://localhost:3000`.
+2.  Try to **Register** a new account.
+3.  If the registration succeeds and you see a "Success" alert, your Frontend is talking to your Backend, and your Backend is talking to your Database!
+
+### Troubleshooting
+- **Network Error**: Ensure `axios.defaults.baseURL` in `App.tsx` is exactly `"http://localhost:8000"`.
+- **404 Not Found**: Ensure you are running `python main.py` and not just a standard script without uvicorn launch.
+- **CORS Error**: Ensure `app.add_middleware(CORSMiddleware, ...)` is present in your `main.py`.
