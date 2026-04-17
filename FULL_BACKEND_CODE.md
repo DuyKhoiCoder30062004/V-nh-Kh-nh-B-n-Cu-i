@@ -147,6 +147,10 @@ def get_restaurants():
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Increment Real Visit Counter
+        cursor.execute("UPDATE app_stats SET value_int = value_int + 1 WHERE key_name = 'total_visits'")
+        
         cursor.execute("""
             SELECT id, name, specialty_dish, image_url, 
                    description, description_en, description_ko, description_zh, description_ja,
@@ -155,6 +159,7 @@ def get_restaurants():
             FROM restaurants
         """)
         data = cursor.fetchall()
+        conn.commit()
         cursor.close()
         conn.close()
         return data
@@ -264,9 +269,15 @@ def get_stats():
         u = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM restaurants")
         r = cursor.fetchone()[0]
+        
+        # Read Real Visit Counter
+        cursor.execute("SELECT value_int FROM app_stats WHERE key_name = 'total_visits'")
+        v = cursor.fetchone()
+        v_count = v[0] if v else 0
+        
         cursor.close()
         conn.close()
-        return {"total_users": u, "total_restaurants": r, "total_visits": r * 15}
+        return {"total_users": u, "total_restaurants": r, "total_visits": v_count}
     except Exception:
         return {"total_users": 0, "total_restaurants": 0, "total_visits": 0}
 
