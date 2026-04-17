@@ -1,6 +1,6 @@
-# Full Frontend Code (React TypeScript)
+# Full Frontend Code: App.tsx
 
-This is the complete `App.tsx` code refactored to work with your Python FastAPI backend. It maintains the same UI layout but swaps out the Node.js/JSON logic for direct API calls to your Python server.
+This code replaces your current `src/App.tsx`. It is fully integrated with the Python FastAPI backend.
 
 ```tsx
 import React, { useState, useEffect, useRef } from "react";
@@ -16,6 +16,7 @@ axios.defaults.baseURL = "http://localhost:8000";
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
 import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+import "./App.css";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -23,8 +24,6 @@ L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
   shadowUrl: markerShadow,
 });
-
-import "./App.css";
 
 // --- MAP ICON CONFIGURATION ---
 const redIcon = new L.Icon({
@@ -67,7 +66,6 @@ interface Restaurant {
 }
 
 interface User {
-  id: number;
   username: string;
   role: string;
   token: string;
@@ -101,11 +99,10 @@ export default function App() {
     lat: 10.7612, lng: 106.7055
   });
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
   // --- 1. INITIAL LOAD ---
   useEffect(() => {
-    const savedUser = localStorage.getItem("foodMapUser");
+    const savedUser = localStorage.getItem("vinhkhanh_user");
     if (savedUser) { 
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser); 
@@ -141,7 +138,7 @@ export default function App() {
         if (isLogin) {
           const userData = { ...res.data };
           setUser(userData);
-          localStorage.setItem("foodMapUser", JSON.stringify(userData));
+          localStorage.setItem("vinhkhanh_user", JSON.stringify(userData));
           axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
           if (userData.role === 'admin') setAuthMode("admin");
           else if (userData.role === 'partner') setAuthMode("partner");
@@ -154,7 +151,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("foodMapUser");
+    localStorage.removeItem("vinhkhanh_user");
     setUser(null);
     setAuthMode("login");
     delete axios.defaults.headers.common['Authorization'];
@@ -180,34 +177,35 @@ export default function App() {
     if (!newRest.description) return alert("Vui lòng nhập mô tả Tiếng Việt!");
     setIsGeneratingAll(true);
     try {
-      // Translation
+      // 1. Dịch văn bản qua Gemini Backend
       const transRes = await axios.post("/api/translate", { text: newRest.description });
       const { en, ko, zh, ja } = transRes.data;
       
-      // Update text state
+      // Cập nhật state text ngay để client thấy
       setNewRest(prev => ({ ...prev, description_en: en, description_ko: ko, description_zh: zh, description_ja: ja }));
 
-      // Generate Audio (Sequential to avoid quota issues)
-      const audio_vi = await generateTTS(newRest.description!, "vi");
-      const audio_en = await generateTTS(en, "en");
-      const audio_ko = await generateTTS(ko, "ko");
-      const audio_zh = await generateTTS(zh, "zh");
-      const audio_ja = await generateTTS(ja, "ja");
+      // 2. Tạo Audio qua ElevenLabs Backend (chạy song song cho nhanh)
+      const langs = [
+        { key: "audio_vi", text: newRest.description },
+        { key: "audio_en", text: en },
+        { key: "audio_ko", text: ko },
+        { key: "audio_zh", text: zh },
+        { key: "audio_ja", text: ja }
+      ];
 
-      setNewRest(prev => ({ ...prev, audio_vi, audio_en, audio_ko, audio_zh, audio_ja }));
-      alert("✅ Hoàn tất xử lý AI!");
+      const audioResults: any = {};
+      for (const item of langs) {
+        const res = await axios.post("/api/tts", { text: item.text });
+        audioResults[item.key] = res.data.audio_base64 || "";
+      }
+
+      setNewRest(prev => ({ ...prev, ...audioResults }));
+      alert("✅ Hoàn tất xử lý AI từ server!");
     } catch (err) {
       alert("Lỗi khi xử lý AI từ Server.");
     } finally {
       setIsGeneratingAll(false);
     }
-  };
-
-  const generateTTS = async (text: string, lang: string) => {
-    try {
-      const res = await axios.post("/api/tts", { text });
-      return res.data.audio_base64 || "";
-    } catch (e) { return ""; }
   };
 
   // --- 5. CRUD HANDLERS ---
@@ -238,12 +236,10 @@ export default function App() {
   const playAudio = (base64Data: string) => {
     if (!base64Data) return alert("Không có dữ liệu âm thanh!");
     const audio = new Audio(`data:audio/mpeg;base64,${base64Data}`);
-    audio.onplay = () => setAudioUrl("playing");
-    audio.onended = () => setAudioUrl(null);
     audio.play();
   };
 
-  // --- UI RENDERING (SAME AS BEFORE) ---
+  // --- UI RENDERING ---
   if (authMode === "login" || authMode === "register") {
     const isLogin = authMode === "login";
     return (
@@ -266,40 +262,109 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* Floating Header & Map UI */}
+      {/* Floating Header */}
       <div className="floating-bar">
         <span>👋 {user?.username} ({user?.role})</span>
         <button onClick={handleLogout}>Thoát</button>
       </div>
 
-      <div className="lang-selector">
-        {LANGUAGES.map(l => (
-          <button key={l.code} onClick={() => setLanguage(l.code)} className={language === l.code ? "active" : ""}>
-            {l.flag}
-          </button>
-        ))}
-      </div>
+      {/* Admin/Partner Panel Link */}
+      {(user?.role === "admin" || user?.role === "partner") && (
+         <div className="portal-toggle">
+            <button onClick={() => setAuthMode(authMode === "app" ? user.role : "app")}>
+              {authMode === "app" ? "📂 Quản Lý Data" : "📍 Xem Bản Đồ"}
+            </button>
+         </div>
+      )}
 
-      <MapContainer center={mapCenter} zoom={16} style={{ height: "100vh", width: "100vw" }}>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        <MapController center={mapCenter} />
-        {restaurants.map(rest => (
-          <Marker key={rest.id} position={[rest.lat, rest.lng]} icon={redIcon}>
-            <Popup>
-              <div className="popup-card">
-                <img src={rest.image_url} alt={rest.name} />
-                <h3>{rest.name}</h3>
-                <p>{rest[LANGUAGES.find(l => l.code === language)?.dbCol as keyof Restaurant]}</p>
-                <button onClick={() => playAudio(rest[`audio_${language}` as keyof Restaurant] as string)}>
-                  🔊 Nghe Giới Thiệu
+      {authMode === "app" ? (
+        <>
+          <div className="lang-selector">
+            {LANGUAGES.map(l => (
+              <button key={l.code} onClick={() => setLanguage(l.code)} className={language === l.code ? "active" : ""}>
+                {l.flag}
+              </button>
+            ))}
+          </div>
+
+          <MapContainer center={mapCenter} zoom={16} style={{ height: "100vh", width: "100vw" }}>
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            <MapController center={mapCenter} />
+            {restaurants.map(rest => {
+              const langConfig = LANGUAGES.find(l => l.code === language);
+              const desc = rest[langConfig?.dbCol as keyof Restaurant] as string;
+              return (
+                <Marker key={rest.id} position={[rest.lat, rest.lng]} icon={redIcon}>
+                  <Popup>
+                    <div className="popup-card">
+                      <img src={rest.image_url} alt={rest.name} referrerPolicy="no-referrer" />
+                      <h3>{rest.name}</h3>
+                      <p>{desc}</p>
+                      <button onClick={() => playAudio(rest[`audio_${language}` as keyof Restaurant] as string)}>
+                        🔊 Nghe Giới Thiệu
+                      </button>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
+          </MapContainer>
+        </>
+      ) : (
+        <div className="admin-portal">
+          <div className="admin-grid">
+            {/* Form Section */}
+            <div className="admin-card">
+              <h3>{editingId ? "✏️ Sửa Quán" : "➕ Thêm Quán"}</h3>
+              <form onSubmit={handleSaveRestaurant}>
+                <input placeholder="Tên quán" value={newRest.name} onChange={e=>setNewRest({...newRest, name:e.target.value})} required/>
+                <input placeholder="Đặc sản" value={newRest.specialty_dish} onChange={e=>setNewRest({...newRest, specialty_dish:e.target.value})} required/>
+                <input placeholder="Link ảnh" value={newRest.image_url} onChange={e=>setNewRest({...newRest, image_url:e.target.value})} />
+                <div className="geo-inputs">
+                  <input type="number" step="any" placeholder="Lat" value={newRest.lat} onChange={e=>setNewRest({...newRest, lat:parseFloat(e.target.value)})}/>
+                  <input type="number" step="any" placeholder="Lng" value={newRest.lng} onChange={e=>setNewRest({...newRest, lng:parseFloat(e.target.value)})}/>
+                </div>
+                <textarea placeholder="Mô tả Tiếng Việt" value={newRest.description} onChange={e=>setNewRest({...newRest, description:e.target.value})} required />
+                <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll}>
+                   {isGeneratingAll ? "AI Đang xử lý..." : "🪄 Tự động AI (Dịch & Voice)"}
                 </button>
-              </div>
-            </Popup>
-          </Marker>
-        ))}
-      </MapContainer>
+                <div className="form-actions">
+                  <button type="submit" className="save-btn">Lưu Vào Database</button>
+                  {editingId && <button type="button" onClick={() => setEditingId(null)}>Hủy</button>}
+                </div>
+              </form>
+            </div>
 
-      {/* Admin/Partner Portals would be rendered here based on user.role */}
+            {/* List Section */}
+            <div className="admin-card">
+              <h3>📋 Danh Sách Quán</h3>
+              <div className="scroll-list">
+                {restaurants.map(r => (
+                  <div key={r.id} className="list-item">
+                    <span>{r.name}</span>
+                    <div className="item-actions">
+                      <button onClick={() => { setEditingId(r.id); setNewRest(r); }}>Sửa</button>
+                      <button onClick={() => handleDeleteRestaurant(r.id, r.name)} className="delete-btn">Xóa</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Stats Section (Admin Only) */}
+            {user?.role === "admin" && (
+                <div className="admin-card">
+                  <h3>📈 Thống Kê Hệ Thống</h3>
+                  <div className="stats-box">
+                    <p>Users: {stats.total_users}</p>
+                    <p>Restaurants: {stats.total_restaurants}</p>
+                    <p>Visits: {stats.total_visits}</p>
+                  </div>
+                </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

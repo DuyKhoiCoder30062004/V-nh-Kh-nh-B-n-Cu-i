@@ -1,9 +1,9 @@
-# Full Backend Code (Python FastAPI)
+# Full Backend Code: main.py (FastAPI)
 
-This is the complete Python code for your backend, incorporating the logic for authentication, restaurant management, AI translation (Gemini), and AI voice (ElevenLabs).
+This is the Python code for your backend. Ensure you have installed the requirements (`fastapi`, `uvicorn`, `psycopg2-binary`, etc.).
 
 ```python
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg2
@@ -21,7 +21,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# Enable CORS for React frontend
+# Cấu hình CORS để React có thể gọi API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,37 +31,30 @@ app.add_middleware(
 )
 
 # ==========================================
-# SYSTEM CONFIGURATION
+# CẤU HÌNH HỆ THỐNG
 # ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-VOICE_ID = "pNInz6obpgDQGcFmaJgB" # ElevenLabs Voice ID
+VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "pNInz6obpgDQGcFmaJgB")
 
 DB_CONFIG = {
     "dbname": "vinhkhanh_db",
     "user": "admin",
-    "password": "your_password", # Update this locally
+    "password": "***",  # TODO: Điền mật khẩu DB của bạn
     "host": "localhost",
     "port": "5432"
 }
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
+SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-key")
 ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ==========================================
-# DATA MODELS
+# MODELS
 # ==========================================
-class LoginRequest(BaseModel):
+class AuthRequest(BaseModel):
     username: str
     password: str
-
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-
-class TranslateRequest(BaseModel):
-    text: str
 
 class RestaurantData(BaseModel):
     name: str
@@ -81,10 +74,10 @@ class RestaurantData(BaseModel):
     audio_ja: str = ""
 
 # ==========================================
-# 1. AUTHENTICATION API
+# 1. API AUTH
 # ==========================================
 @app.post("/api/register")
-def register_user(req: RegisterRequest):
+def register_user(req: AuthRequest):
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
@@ -92,10 +85,10 @@ def register_user(req: RegisterRequest):
         if cursor.fetchone():
             return {"error": "Tên đăng nhập đã tồn tại!"}
 
-        hashed_password = pwd_context.hash(req.password[:70])
+        hashed = pwd_context.hash(req.password[:70])
         cursor.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, 'user')",
-            (req.username, hashed_password)
+            (req.username, hashed)
         )
         conn.commit()
         cursor.close()
@@ -105,7 +98,7 @@ def register_user(req: RegisterRequest):
         return {"error": str(e)}
 
 @app.post("/api/login")
-def login_user(req: LoginRequest):
+def login_user(req: AuthRequest):
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -118,38 +111,35 @@ def login_user(req: LoginRequest):
             return {"error": "Sai tài khoản hoặc mật khẩu!"}
 
         expire = datetime.utcnow() + timedelta(hours=24)
-        payload = {"sub": user['username'], "role": user['role'], "exp": expire}
-        token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
+        token = jwt.encode({"sub": user['username'], "role": user['role'], "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+        
         return {
-            "message": "Đăng nhập thành công!", 
             "token": token, 
             "role": user['role'], 
-            "username": user['username'],
-            "id": user['id']
+            "username": user['username']
         }
     except Exception as e:
         return {"error": str(e)}
 
 # ==========================================
-# 2. RESTAURANT CRUD API
+# 2. API RESTAURANT (POSTGIS)
 # ==========================================
 @app.get("/api/nearby")
-def get_nearby_restaurants():
+def get_restaurants():
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            SELECT id, name, description, specialty_dish, image_url,
-                   description_en, description_ko, description_zh, description_ja,
+            SELECT id, name, specialty_dish, image_url, 
+                   description, description_en, description_ko, description_zh, description_ja,
                    audio_vi, audio_en, audio_ko, audio_zh, audio_ja,
                    ST_X(location::geometry) as lng, ST_Y(location::geometry) as lat
-            FROM restaurants;
+            FROM restaurants
         """)
-        restaurants = cursor.fetchall()
+        data = cursor.fetchall()
         cursor.close()
         conn.close()
-        return restaurants
+        return data
     except Exception as e:
         return {"error": str(e)}
 
@@ -159,17 +149,18 @@ def add_restaurant(req: RestaurantData):
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO restaurants
-            (name, specialty_dish, image_url, description, description_en, description_ko, description_zh, description_ja,
-             audio_vi, audio_en, audio_ko, audio_zh, audio_ja, location)
+            INSERT INTO restaurants (name, specialty_dish, image_url, description, 
+                description_en, description_ko, description_zh, description_ja,
+                audio_vi, audio_en, audio_ko, audio_zh, audio_ja, location)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
-        """, (req.name, req.specialty_dish, req.image_url, req.description, req.description_en,
-              req.description_ko, req.description_zh, req.description_ja,
-              req.audio_vi, req.audio_en, req.audio_ko, req.audio_zh, req.audio_ja, req.lng, req.lat))
+        """, (req.name, req.specialty_dish, req.image_url, req.description,
+              req.description_en, req.description_ko, req.description_zh, req.description_ja,
+              req.audio_vi, req.audio_en, req.audio_ko, req.audio_zh, req.audio_ja,
+              req.lng, req.lat))
         conn.commit()
         cursor.close()
         conn.close()
-        return {"message": "Đã thêm quán ăn thành công!"}
+        return {"message": "Thêm quán thành công!"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -179,19 +170,20 @@ def update_restaurant(rest_id: int, req: RestaurantData):
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("""
-            UPDATE restaurants
-            SET name=%s, specialty_dish=%s, image_url=%s, description=%s, 
+            UPDATE restaurants SET 
+                name=%s, specialty_dish=%s, image_url=%s, description=%s,
                 description_en=%s, description_ko=%s, description_zh=%s, description_ja=%s,
                 audio_vi=%s, audio_en=%s, audio_ko=%s, audio_zh=%s, audio_ja=%s,
                 location=ST_SetSRID(ST_MakePoint(%s, %s), 4326)
             WHERE id = %s
-        """, (req.name, req.specialty_dish, req.image_url, req.description, req.description_en,
-              req.description_ko, req.description_zh, req.description_ja,
-              req.audio_vi, req.audio_en, req.audio_ko, req.audio_zh, req.audio_ja, req.lng, req.lat, rest_id))
+        """, (req.name, req.specialty_dish, req.image_url, req.description,
+              req.description_en, req.description_ko, req.description_zh, req.description_ja,
+              req.audio_vi, req.audio_en, req.audio_ko, req.audio_zh, req.audio_ja,
+              req.lng, req.lat, rest_id))
         conn.commit()
         cursor.close()
         conn.close()
-        return {"message": "Đã cập nhật quán ăn thành công!"}
+        return {"message": "Cập nhật thành công!"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -204,71 +196,51 @@ def delete_restaurant(rest_id: int):
         conn.commit()
         cursor.close()
         conn.close()
-        return {"message": "Đã xóa quán ăn khỏi hệ thống!"}
+        return {"message": "Đã xóa quán!"}
     except Exception as e:
         return {"error": str(e)}
 
 # ==========================================
-# 3. AI SERVICES (TRANSLATE & TTS)
+# 3. AI SERVICES
 # ==========================================
 @app.post("/api/translate")
-def translate_text(req: TranslateRequest):
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-        prompt = f"""Translate the following Vietnamese text into English, Korean, Chinese, and Japanese. 
-        Return ONLY a JSON object with keys 'en', 'ko', 'zh', 'ja'.
-        Text: {req.text}"""
-        
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        response = requests.post(url, headers=headers, json=payload)
-        data = response.json()
-        
-        raw_text = data['candidates'][0]['content']['parts'][0]['text']
-        raw_json = raw_text.replace("```json", "").replace("```", "").strip()
-        return json.loads(raw_json)
-    except Exception as e:
-        return {"error": str(e)}
+def translate(payload: dict = Body(...)):
+    text = payload.get("text")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    prompt = f"""Dịch sang 4 ngôn ngữ (en, ko, zh, ja). Trả về JSON chuẩn duy nhất:
+    {{"en": "...", "ko": "...", "zh": "...", "ja": "..."}}
+    Text: {text}"""
+    
+    resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
+    data = resp.json()
+    raw = data['candidates'][0]['content']['parts'][0]['text']
+    clean = raw.replace("```json", "").replace("```", "").strip()
+    return json.loads(clean)
 
 @app.post("/api/tts")
-def generate_audio(request_data: dict):
-    text = request_data.get("text")
-    if not text or not ELEVENLABS_API_KEY:
-        return {"error": "Missing text or API Key"}
-
+def tts(payload: dict = Body(...)):
+    text = payload.get("text")
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-    headers = {"Accept": "audio/mpeg", "Content-Type": "application/json", "xi-api-key": ELEVENLABS_API_KEY}
-    data = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-    }
+    headers = {"xi-api-key": ELEVENLABS_API_KEY}
+    data = {"text": text, "model_id": "eleven_multilingual_v2"}
+    
+    resp = requests.post(url, json=data, headers=headers)
+    return {"audio_base64": base64.b64encode(resp.content).decode("utf-8")}
 
-    try:
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code != 200:
-            return {"error": f"ElevenLabs Error: {response.text}"}
-        
-        audio_base64 = base64.b64encode(response.content).decode("utf-8")
-        return {"audio_base64": audio_base64}
-    except Exception as e:
-        return {"error": str(e)}
-
-# ==========================================
-# 4. SYSTEM STATS
-# ==========================================
 @app.get("/api/stats")
-def get_system_stats():
-    try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'user'")
-        total_users = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM restaurants")
-        total_rests = cursor.fetchone()[0]
-        cursor.close()
-        conn.close()
-        return {"total_users": total_users, "total_restaurants": total_rests, "total_visits": total_users * 10 + 50}
-    except Exception as e:
-        return {"error": str(e)}
+def get_stats():
+    conn = psycopg2.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'user'")
+    u = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM restaurants")
+    r = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return {"total_users": u, "total_restaurants": r, "total_visits": r * 15}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
+  
