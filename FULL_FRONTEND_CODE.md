@@ -1,6 +1,6 @@
-# Full Frontend Code (Fixed Audio & DB Save)
+# Full Frontend Code: App.tsx (Optimized)
 
-This version fixes the asynchronous state bug to ensure translated text is correctly sent to the TTS engine and saved to the database.
+This version maintains your existing SaaS structure while fixing the AI processing logic and integrating the "Starter CSS" visual elements into the login screen.
 
 ```tsx
 import React, { useState, useEffect, useRef } from "react";
@@ -72,12 +72,14 @@ function MapController({ center }: { center: [number, number] }) {
 }
 
 export default function App() {
+  // --- AUTH STATE ---
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState("login");
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [authError, setAuthError] = useState("");
 
+  // --- APP STATE ---
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [mapCenter, setMapCenter] = useState<[number, number]>([10.7612, 106.7055]);
   const [language, setLanguage] = useState("vi");
@@ -92,6 +94,7 @@ export default function App() {
   });
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
 
+  // --- 1. INITIAL LOAD ---
   useEffect(() => {
     const savedUser = localStorage.getItem("vinhkhanh_user");
     if (savedUser) { 
@@ -111,6 +114,7 @@ export default function App() {
     }
   }, [authMode]);
 
+  // --- 2. AUTH HANDLERS ---
   const handleGuestLogin = () => {
     const guestUser = { username: "Khách", role: "guest", token: "" };
     setUser(guestUser);
@@ -146,6 +150,7 @@ export default function App() {
     delete axios.defaults.headers.common['Authorization'];
   };
 
+  // --- 3. DATA FETCHING ---
   const fetchRestaurants = async () => { 
     try {
       const res = await axios.get("/api/nearby");
@@ -160,14 +165,14 @@ export default function App() {
     } catch(e) {}
   };
 
-  // --- AI LOGIC (FIXED ASYNC BUG) ---
+  // --- 4. AI LOGIC (FIXED ASYNC BUG) ---
   const autoGenerateContent = async () => {
     if (!newRest.description) return alert("Vui lòng nhập mô tả Tiếng Việt!");
     if (!editingId) return alert("Bạn cần lưu quán trước khi tạo nội dung AI!");
     
     setIsGeneratingAll(true);
     try {
-      // 1. Dịch văn bản qua Backend (Sẽ tự động cập nhật Database description_xx)
+      // 1. Dịch văn bản qua Gemini Backend
       const transRes = await axios.post("/api/translate", { 
         text: newRest.description, 
         rest_id: editingId 
@@ -176,17 +181,17 @@ export default function App() {
       const translations = transRes.data; // {en, ko, zh, ja}
       if (translations.error) throw new Error(translations.error);
 
-      // Cập nhật UI ngay lập tức bằng dữ liệu thô (không dùng newRest vì nó async)
+      // Cập nhật state text ngay để client thấy
       setNewRest(prev => ({ ...prev, ...translations }));
 
       // 2. Tạo Audio
-      // Quan trọng: Sử dụng "translations" trực tiếp từ API thay vì "newRest"
+      // Quan trọng: Sử dụng "translations" trực tiếp thay vì state "newRest" đang bị trễ
       const langs = [
-        { key: "audio_vi", text: newRest.description },
-        { key: "audio_en", text: translations.en },
-        { key: "audio_ko", text: translations.ko },
-        { key: "audio_zh", text: translations.zh },
-        { key: "audio_ja", text: translations.ja }
+        { key: "vi", text: newRest.description },
+        { key: "en", text: translations.en },
+        { key: "ko", text: translations.ko },
+        { key: "zh", text: translations.zh },
+        { key: "ja", text: translations.ja }
       ];
 
       const audioResults: any = {};
@@ -195,24 +200,24 @@ export default function App() {
         const res = await axios.post("/api/tts", { 
           text: item.text, 
           rest_id: editingId,
-          lang: item.key.replace("audio_", "") 
+          lang: item.key
         });
-        audioResults[item.key] = res.data.audio_base64 || "";      
+        audioResults[`audio_${item.key}`] = res.data.audio_base64 || "";      
       }
 
       setNewRest(prev => ({ ...prev, ...audioResults }));
       
-      // 3. Refresh lại danh sách để bản đồ có data âm thanh mới nhất
+      // Refresh list to show audio icon properly
       await fetchRestaurants();
-      
-      alert("✅ Hoàn tất xử lý AI: Đã dịch và tạo giọng nói!");
+      alert("✅ Hoàn tất xử lý AI: Đã dịch và tạo giọng nói thành công!");
     } catch (err: any) {
-      alert("Lỗi AI: " + (err.message || "Không xác định"));
+      alert("Lỗi AI: " + (err.message || "Kiểm tra API Key trong .env"));
     } finally {
       setIsGeneratingAll(false);
     }
   };
 
+  // --- 5. CRUD HANDLERS ---
   const handleSaveRestaurant = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -236,23 +241,25 @@ export default function App() {
     }
   };
 
+  // --- 6. AUDIO PLAYBACK ---
   const playAudio = (base64Data: string) => {
-    if (!base64Data) return alert("Quán này chưa có âm thanh. Hãy vào phần Quản lý và nhấn 'Tự động AI'!");
+    if (!base64Data) return alert("Quán này chưa có âm thanh. Hãy nhấn 'Tự động AI' trong trang quản lý!");
     const audio = new Audio(`data:audio/mpeg;base64,${base64Data}`);
     audio.play();
   };
 
-  // --- UI PART WITH INTEGRATED STARTER CSS ---
+  // --- UI RENDERING ---
   if (authMode === "login" || authMode === "register") {
     const isLogin = authMode === "login";
     return (
       <div id="center" className="auth-container">
+        {/* Integrating Starter CSS Hero Elements */}
         <div className="hero">
            <img className="base" src="https://raw.githubusercontent.com/shadcn-ui/ui/main/apps/www/public/og.png" alt="Base" style={{opacity: 0.1}} />
            <img className="framework" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" />
            <img className="vite" src="https://vitejs.dev/logo.svg" alt="Vite" />
         </div>
-        
+
         <div className="auth-card">
           <h2>{isLogin ? "🔐 Đăng Nhập" : "📝 Đăng Ký"}</h2>
           {authError && <p className="error">{authError}</p>}
@@ -262,26 +269,27 @@ export default function App() {
             <button type="submit">{isLogin ? "Đăng Nhập" : "Đăng Ký"}</button>
             <button type="button" className="guest-btn" onClick={handleGuestLogin} style={{ marginTop: "0.5rem", background: "#64748b" }}>
               Tiếp tục với tư cách Khách 👤
-            </button>
+            </button> 
           </form>
           <p onClick={() => setAuthMode(isLogin ? "register" : "login")}>
             {isLogin ? "Chưa có tài khoản? Đăng ký" : "Đã có tài khoản? Đăng nhập"}
           </p>
         </div>
 
+        {/* Floating Structure from Starter CSS */}
         <div id="spacer" className="ticks"></div>
         <div id="next-steps">
-          <div id="docs">
-            <h3>📖 VoiceMap SAAS</h3>
-            <p>Khám phá ẩm thực Vĩnh Khánh bằng giọng nói AI đa ngôn ngữ.</p>
-          </div>
-          <div>
-            <h3>🛠️ Tech Stack</h3>
-            <ul style={{marginTop: "10px"}}>
-              <li><img className="logo" src="https://vitejs.dev/logo.svg" alt="Vite" /></li>
-              <li><img className="logo" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" /></li>
-            </ul>
-          </div>
+           <div id="docs">
+              <h3>📖 VoiceMap SAAS</h3>
+              <p>Khám phá văn hóa ẩm thực Vĩnh Khánh bằng giọng nói AI đa ngôn ngữ.</p>
+           </div>
+           <div>
+              <h3>🚀 Tech Power</h3>
+              <ul style={{marginTop: "10px"}}>
+                 <li><img className="logo" src="https://vitejs.dev/logo.svg" alt="Vite" /></li>
+                 <li><img className="logo" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" /></li>
+              </ul>
+           </div>
         </div>
       </div>
     );
@@ -289,11 +297,13 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Floating Header */}
       <div className="floating-bar">
         <span>👋 {user?.username} ({user?.role})</span>
         <button onClick={handleLogout}>Thoát</button>
       </div>
 
+      {/* Admin/Partner Panel Link */}
       {(user?.role === "admin" || user?.role === "partner") && (
          <div className="portal-toggle">
             <button onClick={() => setAuthMode(authMode === "app" ? user.role : "app")}>
@@ -338,6 +348,7 @@ export default function App() {
       ) : (
         <div className="admin-portal">
           <div className="admin-grid">
+            {/* Form Section */}
             <div className="admin-card">
               <h3>{editingId ? "✏️ Sửa Quán" : "➕ Thêm Quán"}</h3>
               <form onSubmit={handleSaveRestaurant}>
@@ -351,11 +362,11 @@ export default function App() {
                 <textarea placeholder="Mô tả Tiếng Việt" value={newRest.description} onChange={e=>setNewRest({...newRest, description:e.target.value})} required />
                 
                 {editingId && (
-                  <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll} style={{background: "#10b981", color: "white", marginBottom: "1rem"}}>
-                    {isGeneratingAll ? "⌛ AI Đang xử lý (30s)..." : "🪄 Tự động AI (Dịch & Voice)"}
-                  </button>
+                   <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll} style={{background: "#10b981", color: "white", marginBottom: "1rem"}}>
+                      {isGeneratingAll ? "⌛ AI Đang xử lý (30s)..." : "🪄 Tự động AI (Dịch & Voice)"}
+                   </button>
                 )}
-                {!editingId && <p style={{fontSize: "0.8rem", color: "#666"}}>* Lưu quán trước khi dùng AI</p>}
+                {!editingId && <p style={{fontSize: "0.8rem", color: "#666"}}>* Vui lòng Lưu Quán trước khi dùng AI</p>}
 
                 <div className="form-actions">
                   <button type="submit" className="save-btn">Lưu Vào Database</button>
@@ -364,6 +375,7 @@ export default function App() {
               </form>
             </div>
 
+            {/* List Section */}
             <div className="admin-card">
               <h3>📋 Danh Sách Quán</h3>
               <div className="scroll-list">
@@ -379,6 +391,7 @@ export default function App() {
               </div>
             </div>
 
+            {/* Stats Section (Admin Only) */}
             {user?.role === "admin" && (
                 <div className="admin-card">
                   <h3>📈 Thống Kê</h3>
@@ -396,4 +409,3 @@ export default function App() {
   );
 }
 ```
-  
