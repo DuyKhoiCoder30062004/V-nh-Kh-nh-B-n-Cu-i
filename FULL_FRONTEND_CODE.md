@@ -128,6 +128,12 @@ export default function App() {
   }, [authMode]);
 
   // --- 2. AUTH HANDLERS ---
+  const handleGuestLogin = () => {
+    const guestUser = { username: "Khách", role: "guest", token: "" };
+    setUser(guestUser);
+    setAuthMode("app");
+  };
+
   const handleAuth = async (e: React.FormEvent, isLogin: boolean) => {
     e.preventDefault(); setAuthError("");
     const endpoint = isLogin ? "/api/login" : "/api/register";
@@ -243,7 +249,13 @@ export default function App() {
   if (authMode === "login" || authMode === "register") {
     const isLogin = authMode === "login";
     return (
-      <div className="auth-container">
+      <div id="center" className="auth-container">
+        <div className="hero">
+           <img className="base" src="https://raw.githubusercontent.com/shadcn-ui/ui/main/apps/www/public/og.png" alt="Base" style={{opacity: 0.1}} />
+           <img className="framework" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" />
+           <img className="vite" src="https://vitejs.dev/logo.svg" alt="Vite" />
+        </div>
+        
         <div className="auth-card">
           <h2>{isLogin ? "🔐 Đăng Nhập" : "📝 Đăng Ký"}</h2>
           {authError && <p className="error">{authError}</p>}
@@ -251,10 +263,29 @@ export default function App() {
             <input placeholder="Tài khoản" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} required />
             <input type="password" placeholder="Mật khẩu" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required />
             <button type="submit">{isLogin ? "Đăng Nhập" : "Đăng Ký"}</button>
+            <button type="button" className="guest-btn" onClick={handleGuestLogin} style={{ marginTop: "0.5rem", background: "#64748b" }}>
+              Tiếp tục với tư cách Khách 👤
+            </button>
           </form>
           <p onClick={() => setAuthMode(isLogin ? "register" : "login")}>
             {isLogin ? "Chưa có tài khoản? Đăng ký" : "Đã có tài khoản? Đăng nhập"}
           </p>
+        </div>
+
+        <div id="spacer" className="ticks"></div>
+        
+        <div id="next-steps">
+          <div id="docs">
+            <h3>📖 VoiceMap Docs</h3>
+            <p>Hệ thống giới thiệu ẩm thực bằng giọng nói đa ngôn ngữ AI.</p>
+          </div>
+          <div>
+            <h3>🛠️ Powered By</h3>
+            <ul style={{marginTop: "10px"}}>
+              <li><img className="logo" src="https://vitejs.dev/logo.svg" alt="Vite" /></li>
+              <li><img className="logo" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" /></li>
+            </ul>
+          </div>
         </div>
       </div>
     );
