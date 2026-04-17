@@ -1,6 +1,6 @@
-# Full Backend Code (Fixed Password Logic)
+# Full Backend Code (Latest Configuration)
 
-This version removes `passlib` to fix the `AttributeError` and uses the `bcrypt` library directly.
+This version integrates your latest database configuration while maintaining the direct `bcrypt` fix to prevent the `passlib` version error.
 
 ```python
 from fastapi import FastAPI, HTTPException, Body
@@ -10,7 +10,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
 import jwt
-import bcrypt  # Direct import to fix passlib errors
+import bcrypt  # Fixed: Using direct bcrypt to avoid passlib attribute error
 from datetime import datetime, timedelta
 import json
 import os
@@ -37,10 +37,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "pNInz6obpgDQGcFmaJgB")
 
-# !!! IMPORTANT: Update your local Postgres password here !!!
+# Updated per your latest code
 DB_CONFIG = {
-    "dbname": "vinhkhanh_db",
-    "user": "admin",
+    "dbname": "postgres",
+    "user": "postgres",
     "password": "CrAzYbObEr@54321", 
     "host": "localhost",
     "port": "5432"
@@ -50,18 +50,15 @@ SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-key")
 ALGORITHM = "HS256"
 
 # ==========================================
-# AUTH HELPERS (Fixed bcrypt logic)
+# AUTH HELPERS (Fixed direct bcrypt logic)
 # ==========================================
 def hash_password(password: str) -> str:
-    # Bcrypt has a 72-byte limit, so we truncate just in case
     byte_pwd = password.encode('utf-8')[:72]
-    # Generate salt and hash
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(byte_pwd, salt).decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
-        # Check password using the raw bcrypt library
         return bcrypt.checkpw(
             plain_password.encode('utf-8')[:72], 
             hashed_password.encode('utf-8')
@@ -105,7 +102,6 @@ def register_user(req: AuthRequest):
         if cursor.fetchone():
             return {"error": "Tên đăng nhập đã tồn tại!"}
 
-        # Use our new direct hashing function
         hashed = hash_password(req.password)
         
         cursor.execute(
@@ -129,7 +125,6 @@ def login_user(req: AuthRequest):
         cursor.close()
         conn.close()
 
-        # Use our new direct verification function
         if not user or not verify_password(req.password, user['password_hash']):
             return {"error": "Sai tài khoản hoặc mật khẩu!"}
 
@@ -152,7 +147,6 @@ def get_restaurants():
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        # Note: location is stored as geography, we extract coordinates
         cursor.execute("""
             SELECT id, name, specialty_dish, image_url, 
                    description, description_en, description_ko, description_zh, description_ja,
@@ -225,7 +219,7 @@ def delete_restaurant(rest_id: int):
         return {"error": str(e)}
 
 # ==========================================
-# 3. AI SERVICES (SECURE BACKEND)
+# 3. AI SERVICES
 # ==========================================
 @app.post("/api/translate")
 def translate(payload: dict = Body(...)):
@@ -235,7 +229,7 @@ def translate(payload: dict = Body(...)):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     prompt = f"""Dịch sang 4 ngôn ngữ (en, ko, zh, ja). Trả về JSON chuẩn duy nhất:
     {{"en": "...", "ko": "...", "zh": "...", "ja": "..."}}
-    Văn bản gốc: {text}"""
+    Text: {text}"""
     
     try:
         resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
@@ -244,22 +238,19 @@ def translate(payload: dict = Body(...)):
         clean = raw.replace("```json", "").replace("```", "").strip()
         return json.loads(clean)
     except Exception as e:
-        return {"error": f"Gemini Error: {str(e)}"}
+        return {"error": str(e)}
 
 @app.post("/api/tts")
 def tts(payload: dict = Body(...)):
     text = payload.get("text")
-    if not text or not ELEVENLABS_API_KEY:
-        return {"error": "Thiếu dữ liệu văn bản hoặc API Key"}
-
+    if not text: return {"error": "No text provided"}
+    
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-    headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"}
+    headers = {"xi-api-key": ELEVENLABS_API_KEY}
     data = {"text": text, "model_id": "eleven_multilingual_v2"}
     
     try:
         resp = requests.post(url, json=data, headers=headers)
-        if resp.status_code != 200:
-            return {"error": f"ElevenLabs Error: {resp.text}"}
         return {"audio_base64": base64.b64encode(resp.content).decode("utf-8")}
     except Exception as e:
         return {"error": str(e)}
@@ -275,7 +266,7 @@ def get_stats():
         r = cursor.fetchone()[0]
         cursor.close()
         conn.close()
-        return {"total_users": u, "total_restaurants": r, "total_visits": r * 15 + u * 2}
+        return {"total_users": u, "total_restaurants": r, "total_visits": r * 15}
     except Exception:
         return {"total_users": 0, "total_restaurants": 0, "total_visits": 0}
 
