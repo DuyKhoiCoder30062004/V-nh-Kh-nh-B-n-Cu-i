@@ -74,7 +74,7 @@ flowchart TD
 ### 3.2. Xử lý Audio (Base64 vs File)
 *   Hệ thống không lưu file vật lý `.mp3` để giảm tải quản lý file.
 *   Dữ liệu được chuyển đổi thành **Base64 String** trong Backend và lưu trực tiếp vào các cột Text của Database. 
-*   Frontend sử dụng tiền tố `data:audio/mp3;base64,` để phát nhạc trực tiếp từ chuỗi này.
+*   Frontend sử dụng tiền tố `data:audio/mp3;base64,` để phát âm thanh trực tiếp từ chuỗi này.
 
 ### 3.3. Tối ưu hóa AI
 *   Khi chạy AI, hệ thống cập nhật State cục bộ tại Frontend ngay khi nhận được bản dịch để người dùng không phải chờ đợi lâu, trong khi việc tạo Audio (TTS) được xử lý tuần tự phía sau.
