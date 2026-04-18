@@ -1,14 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
-axios.defaults.baseURL = "http://localhost:8000";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+
+// 1. Configure Python Backend URL
+axios.defaults.baseURL = "http://localhost:8000";
 
 // Fix Leaflet default icon issue in Vite
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
 import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+import "./App.css";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -17,10 +20,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 });
 
-import { GoogleGenAI, Modality } from "@google/genai";
-import "./App.css";
-
-// --- CẤU HÌNH BIỂU TƯỢNG BẢN ĐỒ ---
+// --- MAP ICON CONFIGURATION ---
 const redIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
@@ -60,21 +60,10 @@ interface Restaurant {
   lng: number;
 }
 
-interface Plan {
-  id: string;
-  name: string;
-  max_pois: number;
-  max_langs: number;
-  price: string;
-}
-
 interface User {
-  id: number;
   username: string;
   role: string;
-  token?: string;
-  plan_id?: string;
-  plan?: Plan;
+  token: string;
 }
 
 function MapController({ center }: { center: [number, number] }) {
@@ -83,87 +72,62 @@ function MapController({ center }: { center: [number, number] }) {
   return null;
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-
 export default function App() {
-  // --- STATE TÀI KHOẢN ---
+  // --- AUTH STATE ---
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState("login");
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [authError, setAuthError] = useState("");
 
-  // --- STATE BẢN ĐỒ & ỨNG DỤNG ---
+  // --- APP STATE ---
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [mapCenter, setMapCenter] = useState<[number, number]>([10.7612, 106.7055]);
   const [language, setLanguage] = useState("vi");
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
-  
-  // --- STATE ADMIN MỚI ---
-  const [stats, setStats] = useState({ total_users: 0, total_restaurants: 0, total_visits: 0, pending_requests: 0 });
+  const [stats, setStats] = useState({ total_users: 0, total_restaurants: 0, total_visits: 0 });
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [newRest, setNewRest] = useState({
+  const [newRest, setNewRest] = useState<Partial<Restaurant>>({
     name: "", specialty_dish: "", image_url: "", 
     description: "", description_en: "", description_ko: "", description_zh: "", description_ja: "",
     audio_vi: "", audio_en: "", audio_ko: "", audio_zh: "", audio_ja: "",
     lat: 10.7612, lng: 106.7055
   });
-  // --- THÊM STATE CHO QUẢN LÝ USER ---
-  const [adminTab, setAdminTab] = useState("restaurants"); // 'restaurants', 'users', 'requests'
-  const [usersList, setUsersList] = useState<User[]>([]);
-  const [requestsList, setRequestsList] = useState<any[]>([]);
-  const [editingUserId, setEditingUserId] = useState<number | null>(null);
-  const [newUserForm, setNewUserForm] = useState({ username: "", password: "", role: "app", plan_id: "basic" });
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [adminTestLang, setAdminTestLang] = useState("vi");
-
- 
-  // --- STATE ÂM THANH ---
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
 
-
-  // --- 1. KIỂM TRA ĐĂNG NHẬP KHI MỞ WEB ---
+  // --- 1. INITIAL LOAD ---
   useEffect(() => {
     const savedUser = localStorage.getItem("vinhkhanh_user");
     if (savedUser) { 
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser); 
+      axios.defaults.headers.common['Authorization'] = `Bearer ${parsedUser.token}`;
       if (parsedUser.role === 'admin') setAuthMode('admin');
       else if (parsedUser.role === 'partner') setAuthMode('partner');
       else setAuthMode('app');
     }
   }, []);
 
-  // --- 2. LẤY DỮ LIỆU & GPS ---
   useEffect(() => {
-    if (authMode === "app" || authMode === "admin" || authMode === "partner") {
+    if (authMode !== "login" && authMode !== "register") {
       fetchRestaurants();
-      if (authMode === "admin") {
-        fetchStats();
-        fetchUsers();
-        fetchRequests();
-        fetchPlans();
-      }
-      if (authMode === "partner") {
-        fetchRequests();
-      }
-      if ("geolocation" in navigator && !userLocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => { 
-            const loc: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-            setUserLocation(loc); 
-            setMapCenter(loc); 
-          },
-          () => {}
-        );
+      if (authMode === "admin") fetchStats();
+      
+      if ("geolocation" in navigator) {
+        navigator.geolocation.getCurrentPosition((pos) => { 
+          const loc: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+          setUserLocation(loc); setMapCenter(loc); 
+        });
       }
     }
   }, [authMode]);
 
-  // --- 3. XỬ LÝ TÀI KHOẢN ---
+  // --- 2. AUTH HANDLERS ---
+   const handleGuestLogin = () => {
+    const guestUser = { username: "Khách", role: "guest", token: "" };
+    setUser(guestUser);
+    setAuthMode("app");
+  };
   const handleAuth = async (e: React.FormEvent, isLogin: boolean) => {
     e.preventDefault(); setAuthError("");
     const endpoint = isLogin ? "/api/login" : "/api/register";
@@ -172,829 +136,246 @@ export default function App() {
       if (res.data.error) setAuthError(res.data.error);
       else {
         if (isLogin) {
-          const userData: User = { 
-            id: res.data.id, 
-            username: res.data.username, 
-            role: res.data.role, 
-            token: res.data.token,
-            plan_id: res.data.plan_id,
-            plan: res.data.plan
-          };
-          setUser(userData); 
-          localStorage.setItem("vinhkhanh_user", JSON.stringify(userData)); 
+          const userData = { ...res.data };
+          setUser(userData);
+          localStorage.setItem("vinhkhanh_user", JSON.stringify(userData));
+          axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
           if (userData.role === 'admin') setAuthMode("admin");
           else if (userData.role === 'partner') setAuthMode("partner");
           else setAuthMode("app");
-        } else { alert("Đăng ký thành công!"); setAuthMode("login"); }
+        } else { 
+          alert("Đăng ký thành công!"); setAuthMode("login"); 
+        }
       }
-    } catch (err) { setAuthError("Lỗi kết nối."); }
+    } catch (err) { setAuthError("Lỗi kết nối server."); }
   };
-  const handleLogout = () => { localStorage.removeItem("vinhkhanh_user"); setUser(null); setAuthMode("login"); setUsernameInput(""); setPasswordInput(""); };
 
-  // --- 4. DATA FETCHING ---
+  const handleLogout = () => {
+    localStorage.removeItem("vinhkhanh_user");
+    setUser(null);
+    setAuthMode("login");
+    delete axios.defaults.headers.common['Authorization'];
+  };
+
+  // --- 3. DATA FETCHING ---
   const fetchRestaurants = async () => { 
     try {
-      let url = "/api/nearby";
-      if (user?.role === 'partner') url += `?ownerId=${user.id}`;
-      const res = await axios.get(url); 
-      setRestaurants(Array.isArray(res.data) ? res.data : []); 
-    } catch(e) {
-      setRestaurants([]);
-    }
-  };
-  const fetchStats = async () => { try { const res = await axios.get("/api/stats"); setStats(res.data); } catch(e){} };
-  const fetchUsers = async () => { try { const res = await axios.get("/api/users"); setUsersList(Array.isArray(res.data) ? res.data : []); } catch(e){} };
-  const fetchPlans = async () => { try { const res = await axios.get("/api/plans"); setPlans(res.data); } catch(e){} };
-  const fetchRequests = async () => { 
-    try { 
-      const res = await axios.get("/api/requests", {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      }); 
-      setRequestsList(Array.isArray(res.data) ? res.data : []); 
-    } catch(e){
-      setRequestsList([]);
-    } 
+      const res = await axios.get("/api/nearby");
+      setRestaurants(res.data);
+    } catch(e) { console.error(e); }
   };
 
-  
-  // --- 5. HÀM MA THUẬT AI (Sử dụng Gemini API trực tiếp từ Frontend) ---
-  const autoGenerateContent = async () => {
-    if (!newRest.description) return alert("Vui lòng nhập Kịch bản Tiếng Việt trước!");
-    
-    // Kiểm tra giới hạn ngôn ngữ của gói
-    const userPlan = user?.plan;
-    const maxLangs = userPlan?.max_langs || 2;
-    
-    setIsGeneratingAll(true);
-    
+  const fetchStats = async () => {
     try {
-      // 1. Dịch văn bản bằng Gemini
-      console.log("Đang dịch văn bản...");
-      const translatePrompt = `Translate the following Vietnamese text into English, Chinese, Korean, and Japanese. Return ONLY a JSON object with keys 'en', 'zh', 'ko', 'ja'.
-      Text: ${newRest.description}`;
-      
-      const transRes = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: translatePrompt,
-        config: { responseMimeType: "application/json" }
-      });
-      
-      const translations = JSON.parse(transRes.text || "{}");
-      const { en, zh, ko, ja } = translations;
+      const res = await axios.get("/api/stats");
+      setStats(res.data);
+    } catch(e) {}
+  };
 
-      if (!en || !zh || !ko || !ja) throw new Error("Không nhận được bản dịch đầy đủ từ AI.");
-
-      // Cập nhật text trước để người dùng thấy
+  // --- 4. AI LOGIC (BACKEND CALLS) ---
+  const autoGenerateContent = async () => {
+    if (!newRest.description) return alert("Vui lòng nhập mô tả Tiếng Việt!");
+     if (!editingId) return alert("Bạn cần lưu quán trước khi tạo nội dung AI!");
+    setIsGeneratingAll(true);
+    try {
+      // 1. Dịch văn bản qua Gemini Backend
+      const transRes = await axios.post("/api/translate", { 
+  text: newRest.description, 
+  rest_id: editingId 
+});
+      const { en, ko, zh, ja } = transRes.data;
+      
+      // Cập nhật state text ngay để client thấy
       setNewRest(prev => ({ ...prev, description_en: en, description_ko: ko, description_zh: zh, description_ja: ja }));
 
-      const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+      // 2. Tạo Audio qua ElevenLabs Backend (chạy song song cho nhanh)
+      const langs = [
+        { key: "audio_vi", text: newRest.description },
+        { key: "audio_en", text: newRest.description_en },
+        { key: "audio_ko", text: newRest.description_ko },
+        { key: "audio_zh", text: newRest.description_zh },
+        { key: "audio_ja", text: newRest.description_ja }
+      ];
 
-      const generateTTS = async (text: string, lang: string, voice: string, retries = 5) => {
-        console.log(`Đang tạo Audio [${lang}]...`);
-        for (let i = 0; i < retries; i++) {
-          try {
-            const response = await ai.models.generateContent({
-              model: "gemini-2.5-flash-preview-tts",
-              contents: [{ parts: [{ text: `Say in ${lang}: ${text}` }] }],
-              config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: {
-                      prebuiltVoiceConfig: { voiceName: voice },
-                    },
-                },
-              },
-            });
-            const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            return audioData || "";
-          } catch (e: any) {
-            const errorMsg = e.message || "";
-            console.error(`Lỗi TTS [${lang}] (Lần thử ${i + 1}):`, errorMsg);
-            
-            // Nếu lỗi 429 (Quota) hoặc 500/503, thử lại với Backoff mạnh hơn
-            if (i < retries - 1 && (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota") || errorMsg.includes("500"))) {
-              // Exponential backoff: 5s, 10s, 20s, 40s
-              const waitTime = Math.pow(2, i) * 5000; 
-              console.log(`⚠️ Hết hạn ngạch (Quota). Chờ ${waitTime/1000}s trước khi thử lại lần ${i + 2}...`);
-              await sleep(waitTime);
-              continue;
-            }
-            return "";
-          }
-        }
-        return "";
-      };
+      const audioResults: any = {};
+      for (const item of langs) {
+        const res = await axios.post("/api/tts", { 
+  text: item.text, 
+  rest_id: editingId,   // or newRest.id if available
+  lang: item.key.replace("audio_", "") // "vi", "en", "ko", "zh", "ja"
+});
+audioResults[item.key] = res.data.audio_base64 || "";      
+}
 
-      // 2. Tạo Audio bằng Gemini TTS (Chạy tuần tự và gán trực tiếp để tránh mất dữ liệu)
-      const audio_vi = await generateTTS(newRest.description, "Vietnamese", "Kore");
-      await sleep(3000); // Tăng thời gian chờ giữa các ngôn ngữ lên 3s
-      
-      let audio_en = "", audio_zh = "", audio_ko = "", audio_ja = "";
-      
-      if (maxLangs >= 2) {
-        audio_en = await generateTTS(en, "English", "Charon");
-        await sleep(3000);
-      }
-      if (maxLangs >= 5) {
-        audio_zh = await generateTTS(zh, "Chinese", "Zephyr");
-        await sleep(3000);
-        audio_ko = await generateTTS(ko, "Korean", "Fenrir");
-        await sleep(3000);
-        audio_ja = await generateTTS(ja, "Japanese", "Puck");
-      }
-
-      setNewRest(prev => ({ 
-        ...prev, 
-        description_en: en, description_ko: ko, description_zh: zh, description_ja: ja,
-        audio_vi, audio_en, audio_zh, audio_ko, audio_ja 
-      }));
-
-      if (maxLangs < 5) {
-        alert(`✅ Hoàn tất! Vì bạn đang dùng ${userPlan?.name}, AI chỉ tạo Audio cho ${maxLangs} ngôn ngữ chính.`);
-      } else {
-        alert("✅ Hoàn tất! Đã dịch và tạo thành công Audio cho tất cả ngôn ngữ.");
-      }
-    } catch (err: any) { 
-      console.error("AI Error:", err);
-      alert("Lỗi từ Gemini: " + err.message); 
-    } finally { 
-      setIsGeneratingAll(false); 
+      setNewRest(prev => ({ ...prev, ...audioResults }));
+      alert("✅ Hoàn tất xử lý AI từ server!");
+    } catch (err) {
+      alert("Lỗi khi xử lý AI từ Server.");
+    } finally {
+      setIsGeneratingAll(false);
     }
   };
 
-  // --- 6. QUẢN LÝ QUÁN (CRUD) ---
+  // --- 5. CRUD HANDLERS ---
   const handleSaveRestaurant = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const isPartner = user?.role === 'partner';
-      const endpoint = isPartner ? "/api/requests" : (editingId ? `/api/restaurants/${editingId}` : "/api/restaurants");
-      const method = (editingId && !isPartner) ? axios.put : axios.post;
-      
-      const payload = isPartner && editingId && editingId !== -1 ? { ...newRest, restaurant_id: editingId } : newRest;
-
-      const res = await method(endpoint, payload, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
-      
-      if (res.data.error) alert("Lỗi: " + res.data.error);
+      const method = editingId ? axios.put : axios.post;
+      const url = editingId ? `/api/restaurants/${editingId}` : "/api/restaurants";
+      const res = await method(url, newRest);
+      if (res.data.error) alert(res.data.error);
       else {
-        alert(res.data.message || (editingId ? "Đã cập nhật quán ăn!" : "Đã lưu quán mới!"));
+        alert(res.data.message);
         setEditingId(null);
-        setNewRest({ name: "", specialty_dish: "", image_url: "", description: "", description_en: "", description_ko: "", description_zh: "", description_ja: "", audio_vi: "", audio_en: "", audio_ko: "", audio_zh: "", audio_ja: "", lat: 10.7612, lng: 106.7055 });
-        fetchRestaurants(); fetchStats(); fetchRequests();
+        setNewRest({ name: "", specialty_dish: "", image_url: "", description: "", lat: 10.7612, lng: 106.7055 });
+        fetchRestaurants();
       }
-    } catch (err: any) { alert(err.response?.data?.error || "Lỗi máy chủ!"); }
-  };
-
-  const handleEditClick = (rest: Restaurant) => {
-    setEditingId(rest.id);
-    setNewRest({
-      name: rest.name, specialty_dish: rest.specialty_dish, image_url: rest.image_url,
-      description: rest.description, description_en: rest.description_en, description_ko: rest.description_ko, description_zh: rest.description_zh, description_ja: rest.description_ja,
-      audio_vi: rest.audio_vi || "", audio_en: rest.audio_en || "", audio_ko: rest.audio_ko || "", audio_zh: rest.audio_zh || "", audio_ja: rest.audio_ja || "",
-      lat: rest.lat, lng: rest.lng
-    });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) { alert("Lỗi khi lưu dữ liệu."); }
   };
 
   const handleDeleteRestaurant = async (id: number, name: string) => {
     if (window.confirm(`Xóa quán "${name}"?`)) { 
-      await axios.delete(`/api/restaurants/${id}`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      }); 
-      fetchRestaurants(); fetchStats(); 
+      await axios.delete(`/api/restaurants/${id}`); 
+      fetchRestaurants();
     }
   };
 
-  const handleSaveUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const endpoint = editingUserId ? `/api/users/${editingUserId}` : "/api/users";
-      const method = editingUserId ? axios.put : axios.post;
-      const res = await method(endpoint, newUserForm);
-      
-      if (res.data.error) alert("Lỗi: " + res.data.error);
-      else {
-        alert(editingUserId ? "Cập nhật User thành công!" : "Thêm User mới thành công!");
-        setEditingUserId(null);
-        setNewUserForm({ username: "", password: "", role: "app" });
-        fetchUsers(); fetchStats();
-      }
-    } catch (err) { alert("Lỗi kết nối máy chủ!"); }
+  // --- 6. AUDIO PLAYBACK ---
+  const playAudio = (base64Data: string) => {
+    if (!base64Data) return alert("Không có dữ liệu âm thanh!");
+    const audio = new Audio(`data:audio/mpeg;base64,${base64Data}`);
+    audio.play();
   };
 
-  const handleApproveRequest = async (id: number) => {
-    try {
-      await axios.post(`/api/requests/${id}/approve`, {}, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
-      alert("Đã duyệt thành công!");
-      fetchRequests(); fetchRestaurants(); fetchStats();
-    } catch(e){ alert("Lỗi khi duyệt."); }
-  };
-
-  const handleRejectRequest = async (id: number) => {
-    if (window.confirm("Từ chối yêu cầu này?")) {
-      try {
-        await axios.post(`/api/requests/${id}/reject`, {}, {
-          headers: { Authorization: `Bearer ${user?.token}` }
-        });
-        fetchRequests(); fetchStats();
-      } catch(e){ alert("Lỗi."); }
-    }
-  };
-
-  const handleEditUserClick = (userItem: User) => {
-    setEditingUserId(userItem.id);
-    setNewUserForm({ username: userItem.username, password: "", role: userItem.role, plan_id: userItem.plan_id || "basic" }); 
-  };
-
-  const handleDeleteUser = async (id: number, username: string) => {
-    if (window.confirm(`Bạn có chắc muốn xóa tài khoản "${username}"?`)) { 
-      await axios.delete(`/api/users/${id}`); 
-      fetchUsers(); fetchStats(); 
-    }
-  };
-
-  // --- 7. XỬ LÝ ÂM THANH (PHÁT TỪ BASE64) ---
-  const stopAudio = () => {
-    if (audioSourceRef.current) { try { audioSourceRef.current.stop(); } catch(e){} audioSourceRef.current = null; }
-    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null; }
-    setAudioUrl(null);
-  };
-
-  const playRawPCM = async (base64Data: string) => {
-    try {
-      if (!base64Data || base64Data.length < 50) return alert("File âm thanh chưa có sẵn!");
-      stopAudio(); 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      audioContextRef.current = audioContext; if (audioContext.state === 'suspended') await audioContext.resume();
-      const binaryString = atob(base64Data); const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-      const int16Array = new Int16Array(bytes.buffer); const float32Array = new Float32Array(int16Array.length);
-      for (let i = 0; i < int16Array.length; i++) float32Array[i] = int16Array[i] / 32768;
-      const audioBuffer = audioContext.createBuffer(1, float32Array.length, 24000); audioBuffer.getChannelData(0).set(float32Array);
-      const source = audioContext.createBufferSource(); source.buffer = audioBuffer; source.connect(audioContext.destination);
-      source.onended = () => setAudioUrl(null); audioSourceRef.current = source; source.start();
-      setAudioUrl("playing");
-    } catch (err) { console.error(err); alert("Lỗi khi giải mã âm thanh."); }
-  };
-
-  const handlePlayAudioForUser = (restaurant: Restaurant) => {
-    const audioKey = `audio_${language}` as keyof Restaurant;
-    const audioData = restaurant[audioKey] as string;
-    if (audioData) playRawPCM(audioData);
-    else alert("Xin lỗi, Audio cho ngôn ngữ này đang được cập nhật!");
-  };
-
+  // --- UI RENDERING ---
   if (authMode === "login" || authMode === "register") {
-      const isLogin = authMode === "login";
-      return (
-        <div style={{...styles.container, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e0f2f1'}}>
-          <div style={{...styles.card, padding: '30px', width: '100%', maxWidth: '400px'}}>
-            <h2 style={{textAlign: 'center', color: '#009688'}}> {isLogin ? "🔐 Đăng Nhập Bản Đồ" : "📝 Đăng Ký Tài Khoản"} </h2>
-            {authError && <div style={{color: 'red', background: '#ffebee', padding: '10px', borderRadius: '5px', marginBottom: '15px'}}>{authError}</div>}
-            <form onSubmit={(e) => handleAuth(e, isLogin)}>
-              <div style={{marginBottom: '15px'}}><label style={styles.label}>Tài khoản:</label><input required value={usernameInput} onChange={e => setUsernameInput(e.target.value)} style={styles.input} /></div>
-              <div style={{marginBottom: '20px'}}><label style={styles.label}>Mật khẩu:</label><input type="password" required value={passwordInput} onChange={e => setPasswordInput(e.target.value)} style={styles.input} /></div>
-              <button type="submit" style={styles.primaryBtn}>{isLogin ? "Vào Bản Đồ" : "Tạo Tài Khoản"}</button>
-            </form>
-            <div style={{textAlign: 'center', marginTop: '20px', fontSize: '14px'}}>
-              <span onClick={() => { setAuthMode(isLogin ? "register" : "login"); setAuthError(""); }} style={{color: '#009688', cursor: 'pointer', fontWeight: 'bold', textDecoration: 'underline'}}>{isLogin ? "Đăng ký ngay" : "Đăng nhập lại"}</span>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    // ==========================================
-    // GIAO DIỆN 2.5: MERCHANT PORTAL (DÀNH CHO ĐỐI TÁC)
-    // ==========================================
-    if (authMode === "partner" && user?.role === "partner") {
-      const myRests = restaurants.filter(r => r.owner_id === user.id);
-      const myPending = requestsList.filter(r => r.owner_id === user.id && r.status === 'pending');
-      const userPlan = user.plan;
-
-      return (
-        <div style={{fontFamily: 'Arial', background: '#f0f4f8', minHeight: '100vh', padding: '20px'}}>
-          <div style={{maxWidth: '800px', margin: '0 auto'}}>
-            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px'}}>
-              <div>
-                <h2 style={{color: '#00695c', margin: 0}}>🏪 Cổng Thông Tin Đối Tác</h2>
-                <p style={{margin: '5px 0 0 0', color: '#666'}}>Chào mừng, <strong>{user.username}</strong></p>
-                <div style={{marginTop: '5px', fontSize: '12px', background: '#e0f2f1', padding: '4px 10px', borderRadius: '15px', display: 'inline-block', color: '#00796b', fontWeight: 'bold'}}>
-                  📦 Gói: {userPlan?.name} ({myRests.length + myPending.length} / {userPlan?.max_pois} POI)
-                </div>
-              </div>
-              <div style={{display: 'flex', gap: '10px'}}>
-                <button onClick={() => setAuthMode("app")} style={{padding: '10px 20px', background: '#009688', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>📍 Xem Bản Đồ</button>
-                <button onClick={handleLogout} style={{padding: '10px 20px', background: 'white', color: '#f44336', border: '1px solid #f44336', borderRadius: '8px', cursor: 'pointer'}}>Thoát</button>
-              </div>
-            </div>
-
-            {myRests.length + myPending.length >= (userPlan?.max_pois || 1) && !editingId ? (
-              <div style={{...styles.card, padding: '20px', textAlign: 'center', background: '#fff3e0', border: '1px solid #ffb74d', marginBottom: '20px'}}>
-                <h4 style={{margin: 0, color: '#e65100'}}>⚠️ Đã đạt giới hạn quán ăn!</h4>
-                <p style={{fontSize: '13px', margin: '5px 0'}}>Gói <strong>{userPlan?.name}</strong> của bạn chỉ cho phép tối đa {userPlan?.max_pois} quán. Hãy liên hệ Admin để nâng cấp gói.</p>
-              </div>
-            ) : null}
-
-            {myRests.length === 0 && myPending.length === 0 && !editingId ? (
-              <div style={{...styles.card, padding: '40px', textAlign: 'center'}}>
-                <div style={{fontSize: '50px', marginBottom: '20px'}}>🍽️</div>
-                <h3>Bạn chưa có quán ăn nào trên hệ thống!</h3>
-                <p>Vui lòng nhấn nút bên dưới để bắt đầu tạo hồ sơ quán của bạn.</p>
-                <button 
-                  onClick={() => setEditingId(-1)} 
-                  style={{...styles.primaryBtn, maxWidth: '250px', margin: '20px auto'}}
-                >
-                  ➕ Tạo Quán Ăn Ngay
-                </button>
-              </div>
-            ) : (
-              <>
-                {/* DANH SÁCH QUÁN CỦA PARTNER */}
-                <div style={{display: 'flex', gap: '15px', marginBottom: '20px', overflowX: 'auto', paddingBottom: '10px'}}>
-                  {myRests.map(r => (
-                    <div key={r.id} onClick={() => handleEditClick(r)} style={{
-                      minWidth: '200px', background: editingId === r.id ? '#e0f2f1' : 'white', 
-                      padding: '15px', borderRadius: '12px', cursor: 'pointer', border: editingId === r.id ? '2px solid #009688' : '1px solid #eee',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.05)'
-                    }}>
-                      <div style={{fontWeight: 'bold', marginBottom: '5px'}}>{r.name}</div>
-                      <div style={{fontSize: '12px', color: '#666'}}>{r.specialty_dish}</div>
-                    </div>
-                  ))}
-                  {myRests.length + myPending.length < (userPlan?.max_pois || 1) && (
-                    <div onClick={() => {
-                      setEditingId(-1);
-                      setNewRest({ name: "", specialty_dish: "", image_url: "", description: "", description_en: "", description_ko: "", description_zh: "", description_ja: "", audio_vi: "", audio_en: "", audio_ko: "", audio_zh: "", audio_ja: "", lat: 10.7612, lng: 106.7055 });
-                    }} style={{
-                      minWidth: '150px', background: '#f5f5f5', border: '2px dashed #ccc',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px', cursor: 'pointer'
-                    }}>
-                      ➕ Thêm quán mới
-                    </div>
-                  )}
-                </div>
-
-                {/* FORM CHỈNH SỬA / TẠO MỚI */}
-                {(editingId || (myRests.length === 0 && myPending.length === 0)) && (
-                  <div style={{...styles.card, padding: '25px', marginBottom: '30px', borderTop: '5px solid #009688'}}>
-                    <h3 style={{marginTop: 0, marginBottom: '20px', borderBottom: '1px solid #eee', paddingBottom: '10px'}}>
-                      {editingId === -1 ? "➕ Tạo Hồ Sơ Quán Ăn Mới" : `📝 Quản Lý: ${newRest.name}`}
-                    </h3>
-                    
-                    <form onSubmit={handleSaveRestaurant}>
-                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px'}}>
-                        <div style={{gridColumn: '1 / -1'}}>
-                          <label style={styles.label}>Tên quán ăn của bạn (*)</label>
-                          <input required value={newRest.name} onChange={e=>setNewRest({...newRest, name: e.target.value})} style={styles.input} placeholder="Ví dụ: Ốc Đào Vĩnh Khánh" />
-                        </div>
-                        <div>
-                          <label style={styles.label}>Món đặc sản (*)</label>
-                          <input required value={newRest.specialty_dish} onChange={e=>setNewRest({...newRest, specialty_dish: e.target.value})} style={styles.input} placeholder="Ví dụ: Ốc hương trứng muối" />
-                        </div>
-                        <div>
-                          <label style={styles.label}>Link Hình Ảnh</label>
-                          <input value={newRest.image_url} onChange={e=>setNewRest({...newRest, image_url: e.target.value})} style={styles.input} placeholder="Dán link ảnh tại đây..." />
-                        </div>
-                        
-                        {/* KHU VỰC AI VOICE */}
-                        <div style={{gridColumn: '1 / -1', background: '#e0f2f1', padding: '20px', borderRadius: '12px', border: '1px solid #b2dfdb'}}>
-                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                            <label style={{...styles.label, color: '#00796b', margin: 0}}>🎙️ Kịch bản giới thiệu & AI Voice (*)</label>
-                            <span style={{fontSize: '12px', color: '#00796b', background: '#b2dfdb', padding: '2px 8px', borderRadius: '10px'}}>Powered by Gemini AI</span>
-                          </div>
-                          <textarea 
-                            required 
-                            rows={4} 
-                            value={newRest.description} 
-                            onChange={e=>setNewRest({...newRest, description: e.target.value})} 
-                            style={{...styles.input, fontSize: '15px'}} 
-                            placeholder="Hãy nhập lời chào khách bằng tiếng Việt. AI sẽ tự động dịch sang các ngôn ngữ khác!" 
-                          />
-                          
-                          <div style={{marginTop: '15px', display: 'flex', gap: '15px', alignItems: 'center', flexWrap: 'wrap'}}>
-                            <button 
-                              type="button" 
-                              onClick={autoGenerateContent} 
-                              disabled={isGeneratingAll} 
-                              style={{
-                                background: '#00796b', 
-                                color: 'white', 
-                                padding: '12px 25px', 
-                                border: 'none', 
-                                borderRadius: '8px', 
-                                fontWeight: 'bold', 
-                                cursor: 'pointer',
-                                boxShadow: '0 4px 12px rgba(0,121,107,0.3)',
-                                flex: '2 1 200px'
-                              }}
-                            >
-                              {isGeneratingAll ? "⏳ AI Đang Xử Lý..." : "🪄 Kích Hoạt AI Ma Thuật"}
-                            </button>
-                            
-                            <div style={{display: 'flex', gap: '8px', flex: '1 1 200px'}}>
-                              <select 
-                                value={adminTestLang} 
-                                onChange={(e) => setAdminTestLang(e.target.value)}
-                                style={{padding: '10px', borderRadius: '8px', border: '1px solid #b2dfdb', flex: 1}}
-                              >
-                                {LANGUAGES.map(l => {
-                                  const isAllowed = (userPlan?.max_langs || 2) >= 5 || l.code === 'vi' || l.code === 'en';
-                                  return (
-                                    <option key={l.code} value={l.code} disabled={!isAllowed}>
-                                      {l.flag} {l.name} {!isAllowed && "(Cần nâng cấp gói)"}
-                                    </option>
-                                  );
-                                })}
-                              </select>
-                              <button 
-                                type="button" 
-                                onClick={() => {
-                                  const audioKey = `audio_${adminTestLang}` as keyof typeof newRest;
-                                  const audioData = newRest[audioKey] as string;
-                                  if (audioData) playRawPCM(audioData);
-                                  else alert("Vui lòng nhấn nút 'Kích Hoạt AI' trước!");
-                                }} 
-                                style={{ background: '#ff9800', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
-                              >
-                                ▶️ Phát
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{marginTop: '30px', display: 'flex', gap: '15px'}}>
-                        <button type="submit" style={{...styles.primaryBtn, flex: 2, height: '50px', fontSize: '16px'}}>
-                          {editingId === -1 ? "🚀 Gửi Yêu Cầu Tạo Quán" : "💾 Cập Nhật Thông Tin"}
-                        </button>
-                        {editingId !== -1 && (
-                          <button type="button" onClick={() => setEditingId(null)} style={{flex: 1, background: 'white', border: '1px solid #ccc', borderRadius: '8px', cursor: 'pointer'}}>Hủy</button>
-                        )}
-                      </div>
-                    </form>
-                  </div>
-                )}
-
-                {/* TRẠNG THÁI YÊU CẦU */}
-                <div style={{...styles.card, padding: '20px', marginBottom: '30px'}}>
-                  <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>📊 Trạng Thái Yêu Cầu Của Bạn</h3>
-                  {requestsList.length === 0 ? (
-                    <p style={{fontSize: '13px', color: '#666'}}>Bạn chưa gửi yêu cầu nào.</p>
-                  ) : (
-                    <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
-                      {requestsList.filter(r => r.owner_id === user.id).slice(0, 5).map(req => (
-                        <div key={req.id} style={{display: 'flex', justifyContent: 'space-between', padding: '10px', background: '#f9f9f9', borderRadius: '5px'}}>
-                          <span style={{fontSize: '13px'}}>{req.name} ({new Date(req.created_at).toLocaleDateString()})</span>
-                          <span style={{
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            padding: '2px 8px', 
-                            borderRadius: '10px',
-                            background: req.status === 'approved' ? '#e8f5e9' : (req.status === 'pending' ? '#fff3e0' : '#ffebee'),
-                            color: req.status === 'approved' ? '#2e7d32' : (req.status === 'pending' ? '#e65100' : '#c62828')
-                          }}>
-                            {req.status === 'approved' ? "Đã Duyệt" : (req.status === 'pending' ? "Chờ Duyệt" : "Từ Chối")}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      );
-    }
-
-  // ==========================================
-  // GIAO DIỆN 2: TRANG QUẢN TRỊ ADMIN (CMS)
-  // ==========================================
-  if (authMode === "admin" && user?.role === "admin") {
+    const isLogin = authMode === "login";
     return (
-      <div style={{fontFamily: 'Arial', background: '#f5f5f5', minHeight: '100vh', padding: '20px', overflowY: 'auto'}}>
-        <div style={{maxWidth: '1000px', margin: '0 auto'}}>
-          {/* HEADER ADMIN */}
-          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px'}}>
-            <h2 style={{color: '#d32f2f', margin: 0}}>⚙️ Hệ Thống Quản Trị (Admin Panel)</h2>
-            <button onClick={() => setAuthMode("app")} style={{padding: '8px 15px', background: '#2196F3', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer'}}>⬅ Về Bản Đồ</button>
-          </div>
-
-          {/* THANH MENU TABS */}
-          <div style={{display: 'flex', gap: '10px', marginBottom: '25px', borderBottom: '2px solid #ddd', paddingBottom: '10px'}}>
-            <button 
-              onClick={() => setAdminTab("restaurants")} 
-              style={adminTab === "restaurants" ? styles.adminTabActive : styles.adminTabInactive}
-            >
-              🍽️ Quản lý Quán Ăn
-            </button>
-            <button 
-              onClick={() => setAdminTab("users")} 
-              style={adminTab === "users" ? styles.adminTabActive : styles.adminTabInactive}
-            >
-              👥 Quản lý Người Dùng
-            </button>
-            <button 
-              onClick={() => setAdminTab("requests")} 
-              style={adminTab === "requests" ? styles.adminTabActive : styles.adminTabInactive}
-            >
-              ⏳ Chờ Duyệt {stats.pending_requests > 0 && <span style={{background: 'red', color: 'white', padding: '2px 6px', borderRadius: '10px', fontSize: '12px'}}>{stats.pending_requests}</span>}
-            </button>
-          </div>
-
-          {adminTab === "restaurants" && (
-            <>
-              {/* THỐNG KÊ */}
-              <div style={{display: 'flex', gap: '15px', marginBottom: '25px'}}>
-                <div style={{...styles.statCard, borderLeft: '5px solid #2196F3'}}><div style={{fontSize: '24px', fontWeight: 'bold'}}>{stats.total_users}</div><div style={{fontSize: '13px', color: '#666'}}>👥 Khách hàng</div></div>
-                <div style={{...styles.statCard, borderLeft: '5px solid #4CAF50'}}><div style={{fontSize: '24px', fontWeight: 'bold'}}>{stats.total_restaurants}</div><div style={{fontSize: '13px', color: '#666'}}>🍽️ Quán ăn</div></div>
-                <div style={{...styles.statCard, borderLeft: '5px solid #ff9800'}}><div style={{fontSize: '24px', fontWeight: 'bold'}}>{stats.total_visits}</div><div style={{fontSize: '13px', color: '#666'}}>📈 Lượt quét QR</div></div>
-                <div style={{...styles.statCard, borderLeft: '5px solid #f44336'}}><div style={{fontSize: '24px', fontWeight: 'bold'}}>{stats.pending_requests}</div><div style={{fontSize: '13px', color: '#666'}}>⏳ Chờ duyệt</div></div>
-              </div>
-
-              {/* FORM THÊM/SỬA QUÁN */}
-              <div style={{...styles.card, padding: '20px', marginBottom: '30px', borderTop: editingId ? '4px solid #9c27b0' : '4px solid #4CAF50'}}>
-                <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>{editingId ? "✏️ Chỉnh Sửa Quán Ăn" : "➕ Thêm Quán Ăn Mới"}</h3>
-                <form onSubmit={handleSaveRestaurant}>
-                  <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px'}}>
-                    <div><label style={styles.label}>Tên quán ăn (*)</label><input required value={newRest.name} onChange={e=>setNewRest({...newRest, name: e.target.value})} style={styles.input} /></div>
-                    <div><label style={styles.label}>Món đặc sản (*)</label><input required value={newRest.specialty_dish} onChange={e=>setNewRest({...newRest, specialty_dish: e.target.value})} style={styles.input} /></div>
-                    <div><label style={styles.label}>Vĩ độ (Latitude) (*)</label><input type="number" step="any" required value={newRest.lat} onChange={e=>setNewRest({...newRest, lat: parseFloat(e.target.value)})} style={styles.input} /></div>
-                    <div><label style={styles.label}>Kinh độ (Longitude) (*)</label><input type="number" step="any" required value={newRest.lng} onChange={e=>setNewRest({...newRest, lng: parseFloat(e.target.value)})} style={styles.input} /></div>
-                    <div style={{gridColumn: '1 / -1'}}><label style={styles.label}>Link Hình Ảnh (URL)</label><input value={newRest.image_url} onChange={e=>setNewRest({...newRest, image_url: e.target.value})} style={styles.input} /></div>
-                    
-                    {/* KHU VỰC AI */}
-                    <div style={{gridColumn: '1 / -1', background: '#e3f2fd', padding: '15px', borderRadius: '8px'}}>
-                      <label style={{...styles.label, color: '#1976d2'}}>🇻🇳 Kịch bản gốc (Tiếng Việt) (*)</label>
-                      <textarea required rows={3} value={newRest.description} onChange={e=>setNewRest({...newRest, description: e.target.value})} style={styles.input} placeholder="Nhập giới thiệu bằng tiếng Việt để AI tự dịch..." />
-                      <div style={{display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap'}}>
-                        <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll} style={{background: '#1976d2', color: 'white', padding: '10px', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer', flex: '2 1 200px'}}>
-                          {isGeneratingAll ? "⏳ AI Đang Xử Lý..." : "🪄 Tự động Dịch & Sinh Audio (Gemini AI)"}
-                        </button>
-                        <div style={{display: 'flex', gap: '5px', flex: '1 1 150px'}}>
-                          <select 
-                            value={adminTestLang} 
-                            onChange={(e) => setAdminTestLang(e.target.value)}
-                            style={{padding: '5px', borderRadius: '5px', border: '1px solid #ccc', fontSize: '13px', flex: 1}}
-                          >
-                            {LANGUAGES.map(l => (
-                              <option key={l.code} value={l.code}>{l.flag} {l.name}</option>
-                            ))}
-                          </select>
-                          <button 
-                            type="button" 
-                            onClick={() => {
-                              const audioKey = `audio_${adminTestLang}` as keyof typeof newRest;
-                              const audioData = newRest[audioKey] as string;
-                              if (audioData) playRawPCM(audioData);
-                              else alert("Chưa có audio cho ngôn ngữ này! Hãy nhấn nút AI để tạo.");
-                            }} 
-                            style={{...styles.playTestBtn, marginTop: 0, flex: 1}}
-                          >
-                            ▶️ Nghe Thử
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={styles.aiResultBox}>
-                      <label style={styles.label}>🇺🇸 Kịch bản (English)</label>
-                      <textarea rows={2} value={newRest.description_en} onChange={e=>setNewRest({...newRest, description_en: e.target.value})} style={styles.input} />
-                      {newRest.audio_en ? <button type="button" onClick={() => playRawPCM(newRest.audio_en)} style={styles.playTestBtn}>▶️ Nghe Audio</button> : <span style={styles.missingBadge}>Thiếu Audio</span>}
-                    </div>
-                    <div style={styles.aiResultBox}>
-                      <label style={styles.label}>🇨🇳 Kịch bản (Chinese)</label>
-                      <textarea rows={2} value={newRest.description_zh} onChange={e=>setNewRest({...newRest, description_zh: e.target.value})} style={styles.input} />
-                      {newRest.audio_zh ? <button type="button" onClick={() => playRawPCM(newRest.audio_zh)} style={styles.playTestBtn}>▶️ Nghe Audio</button> : <span style={styles.missingBadge}>Thiếu Audio</span>}
-                    </div>
-                    <div style={styles.aiResultBox}>
-                      <label style={styles.label}>🇰🇷 Kịch bản (Korean)</label>
-                      <textarea rows={2} value={newRest.description_ko} onChange={e=>setNewRest({...newRest, description_ko: e.target.value})} style={styles.input} />
-                      {newRest.audio_ko ? <button type="button" onClick={() => playRawPCM(newRest.audio_ko)} style={styles.playTestBtn}>▶️ Nghe Audio</button> : <span style={styles.missingBadge}>Thiếu Audio</span>}
-                    </div>
-                    <div style={styles.aiResultBox}>
-                      <label style={styles.label}>🇯🇵 Kịch bản (Japanese)</label>
-                      <textarea rows={2} value={newRest.description_ja} onChange={e=>setNewRest({...newRest, description_ja: e.target.value})} style={styles.input} />
-                      {newRest.audio_ja ? <button type="button" onClick={() => playRawPCM(newRest.audio_ja)} style={styles.playTestBtn}>▶️ Nghe Audio</button> : <span style={styles.missingBadge}>Thiếu Audio</span>}
-                    </div>
-                  </div>
-
-                  <div style={{marginTop: '20px', display: 'flex', gap: '10px'}}>
-                    <button type="submit" style={{...styles.primaryBtn, background: editingId ? '#9c27b0' : '#4CAF50'}}>
-                      {editingId ? "💾 Lưu Cập Nhật Database" : "💾 Thêm Quán Mới"}
-                    </button>
-                    {editingId && <button type="button" onClick={() => { setEditingId(null); setNewRest({ name: "", specialty_dish: "", image_url: "", description: "", description_en: "", description_ko: "", description_zh: "", description_ja: "", audio_vi: "", audio_en: "", audio_ko: "", audio_zh: "", audio_ja: "", lat: 10.7612, lng: 106.7055 }); }} style={{padding: '10px', cursor: 'pointer', borderRadius: '5px', border: '1px solid #ccc'}}>Hủy Sửa</button>}
-                  </div>
-                </form>
-              </div>
-
-              {/* DANH SÁCH QUÁN ĂN */}
-              <div style={{...styles.card, padding: '20px'}}>
-                <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>📋 Danh Sách Quán Ăn</h3>
-                {Array.isArray(restaurants) && restaurants.map(rest => (
-                  <div key={rest.id} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: '1px solid #eee'}}>
-                    <div><strong>{rest.name}</strong> - {rest.audio_en ? "✅ Có Audio AI" : "❌ Thiếu Audio"}</div>
-                    <div style={{display: 'flex', gap: '10px'}}>
-                      <button onClick={() => handleEditClick(rest)} style={{padding: '5px 10px', background: '#9c27b0', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer'}}>✏️ Sửa / Review AI</button>
-                      <button onClick={() => handleDeleteRestaurant(rest.id, rest.name)} style={{padding: '5px 10px', background: '#f44336', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer'}}>🗑️ Xóa</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
-          {adminTab === "requests" && (
-            <div style={{...styles.card, padding: '20px'}}>
-              <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>⏳ Yêu Cầu Chờ Duyệt</h3>
-              {Array.isArray(requestsList) && requestsList.filter(r => r.status === 'pending').length === 0 ? (
-                <p style={{textAlign: 'center', padding: '20px', color: '#666'}}>Không có yêu cầu nào đang chờ.</p>
-              ) : (
-                Array.isArray(requestsList) && requestsList.filter(r => r.status === 'pending').map(req => (
-                  <div key={req.id} style={{border: '1px solid #eee', borderRadius: '8px', padding: '15px', marginBottom: '15px', background: '#fff'}}>
-                    <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px'}}>
-                      <div>
-                        <strong style={{fontSize: '16px'}}>{req.name}</strong>
-                        <div style={{fontSize: '12px', color: '#666'}}>Người gửi: {req.owner_name} | {new Date(req.created_at).toLocaleString()}</div>
-                      </div>
-                      <div style={{display: 'flex', gap: '10px'}}>
-                        <button onClick={() => handleApproveRequest(req.id)} style={{padding: '8px 15px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold'}}>Duyệt ✅</button>
-                        <button onClick={() => handleRejectRequest(req.id)} style={{padding: '8px 15px', background: '#f44336', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer'}}>Từ chối ❌</button>
-                      </div>
-                    </div>
-                    <div style={{fontSize: '13px', background: '#f9f9f9', padding: '10px', borderRadius: '5px'}}>
-                      <div><strong>Món:</strong> {req.specialty_dish}</div>
-                      <div style={{marginTop: '5px'}}><strong>Kịch bản:</strong> {req.description.substring(0, 100)}...</div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {adminTab === "users" && (
-            <>
-              {/* FORM THÊM/SỬA USER */}
-              <div style={{...styles.card, padding: '20px', marginBottom: '30px', borderTop: editingUserId ? '4px solid #9c27b0' : '4px solid #2196F3'}}>
-                <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>
-                  {editingUserId ? "✏️ Cập Nhật Người Dùng" : "➕ Thêm Tài Khoản Mới"}
-                </h3>
-                <form onSubmit={handleSaveUser}>
-                  <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '15px', alignItems: 'end'}}>
-                    <div>
-                      <label style={styles.label}>Tên tài khoản (*)</label>
-                      <input required value={newUserForm.username} onChange={e=>setNewUserForm({...newUserForm, username: e.target.value})} style={styles.input} disabled={!!editingUserId} />
-                    </div>
-                    <div>
-                      <label style={styles.label}>{editingUserId ? "Đổi mật khẩu mới (Bỏ trống nếu giữ nguyên)" : "Mật khẩu (*)"}</label>
-                      <input type="password" required={!editingUserId} value={newUserForm.password} onChange={e=>setNewUserForm({...newUserForm, password: e.target.value})} style={styles.input} />
-                    </div>
-                    <div>
-                      <label style={styles.label}>Quyền hạn (Role)</label>
-                      <select value={newUserForm.role} onChange={e=>setNewUserForm({...newUserForm, role: e.target.value})} style={{...styles.input, padding: '9px'}}>
-                        <option value="app">app (Khách hàng)</option>
-                        <option value="partner">partner (Đối tác)</option>
-                        <option value="admin">admin (Quản trị viên)</option>
-                      </select>
-                    </div>
-                    {newUserForm.role === 'partner' && (
-                      <div>
-                        <label style={styles.label}>Gói dịch vụ</label>
-                        <select value={newUserForm.plan_id} onChange={e=>setNewUserForm({...newUserForm, plan_id: e.target.value})} style={{...styles.input, padding: '9px'}}>
-                          {plans.map(p => (
-                            <option key={p.id} value={p.id}>{p.name} ({p.max_pois} POI, {p.max_langs} Lang)</option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                  <div style={{marginTop: '15px', display: 'flex', gap: '10px'}}>
-                    <button type="submit" style={{...styles.primaryBtn, background: editingUserId ? '#9c27b0' : '#2196F3'}}>
-                      {editingUserId ? "💾 Lưu Thay Đổi" : "💾 Tạo Tài Khoản"}
-                    </button>
-                    {editingUserId && <button type="button" onClick={() => { setEditingUserId(null); setNewUserForm({ username: "", password: "", role: "app" }); }} style={{padding: '10px', cursor: 'pointer', borderRadius: '5px', border: '1px solid #ccc'}}>Hủy Sửa</button>}
-                  </div>
-                </form>
-              </div>
-
-              {/* DANH SÁCH USER */}
-              <div style={{...styles.card, padding: '20px'}}>
-                <h3 style={{marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '10px'}}>👥 Danh Sách Tài Khoản</h3>
-                <table style={{width: '100%', borderCollapse: 'collapse', marginTop: '10px'}}>
-                  <thead>
-                    <tr style={{background: '#f5f5f5', textAlign: 'left'}}>
-                      <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>ID</th>
-                      <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Tài khoản</th>
-                      <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Quyền hạn</th>
-                      <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Gói / Plan</th>
-                      <th style={{padding: '10px', borderBottom: '2px solid #ddd'}}>Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Array.isArray(usersList) && usersList.length > 0 ? usersList.map(u => (
-                      <tr key={u.id} style={{borderBottom: '1px solid #eee'}}>
-                        <td style={{padding: '10px'}}>{u.id}</td>
-                        <td style={{padding: '10px', fontWeight: 'bold'}}>{u.username}</td>
-                        <td style={{padding: '10px'}}>
-                          <span style={{background: u.role === 'admin' ? '#ffebee' : '#e8f5e9', color: u.role === 'admin' ? '#c62828' : '#2e7d32', padding: '3px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold'}}>
-                            {u.role.toUpperCase()}
-                          </span>
-                        </td>
-                        <td style={{padding: '10px'}}>
-                          {u.role === 'partner' && (
-                            <span style={{fontSize: '12px', color: '#666'}}>
-                              {plans.find(p => p.id === u.plan_id)?.name || u.plan_id}
-                            </span>
-                          )}
-                        </td>
-                        <td style={{padding: '10px'}}>
-                          <button onClick={() => handleEditUserClick(u)} style={{marginRight: '5px', padding: '5px 10px', background: '#9c27b0', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer'}}>Sửa</button>
-                          {user?.username !== u.username && (
-                            <button onClick={() => handleDeleteUser(u.id, u.username)} style={{padding: '5px 10px', background: '#f44336', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer'}}>Xóa</button>
-                          )}
-                        </td>
-                      </tr>
-                    )) : <tr><td colSpan={4} style={{textAlign: 'center', padding: '20px'}}>Chưa có dữ liệu người dùng.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
+      <div className="auth-container">
+        <div className="auth-card">
+          <h2>{isLogin ? "🔐 Đăng Nhập" : "📝 Đăng Ký"}</h2>
+          {authError && <p className="error">{authError}</p>}
+          <form onSubmit={(e) => handleAuth(e, isLogin)}>
+            <input placeholder="Tài khoản" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} required />
+            <input type="password" placeholder="Mật khẩu" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required />
+            <button type="submit">{isLogin ? "Đăng Nhập" : "Đăng Ký"}</button>
+            <button type="button" className="guest-btn" onClick={handleGuestLogin} style={{ marginTop: "0.5rem", background: "#64748b" }}>
+              Tiếp tục với tư cách Khách 👤
+            </button> 
+          </form>
+          <p onClick={() => setAuthMode(isLogin ? "register" : "login")}>
+            {isLogin ? "Chưa có tài khoản? Đăng ký" : "Đã có tài khoản? Đăng nhập"}
+          </p>
         </div>
       </div>
     );
   }
-  // ==========================================
-  // GIAO DIỆN 3: BẢN ĐỒ KHÁCH HÀNG
-  // ==========================================
+
   return (
-    <div style={styles.container}>
-      <div style={styles.floatingUserBar}>
-        <div style={{fontSize: '13px'}}>👋 Chào, <strong>{user?.username}</strong> {user?.role === 'admin' && <span style={{background: '#ff5252', padding: '2px 6px', borderRadius: '4px', marginLeft: '8px', fontSize: '10px'}}>ADMIN</span>} {user?.role === 'partner' && <span style={{background: '#009688', padding: '2px 6px', borderRadius: '4px', marginLeft: '8px', fontSize: '10px'}}>PARTNER</span>}</div>
-        <div style={{display: 'flex', gap: '10px'}}>
-          {user?.role === 'admin' && <button onClick={() => setAuthMode("admin")} style={{background: '#ff9800', border: 'none', color: 'white', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold'}}>⚙️ Quản lý</button>}
-          {user?.role === 'partner' && <button onClick={() => setAuthMode("partner")} style={{background: '#009688', border: 'none', color: 'white', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold'}}>🏪 Cửa hàng</button>}
-          <button onClick={handleLogout} style={{background: 'transparent', border: '1px solid white', color: 'white', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'}}>Thoát</button>
-        </div>
+    <div className="app-container">
+      {/* Floating Header */}
+      <div className="floating-bar">
+        <span>👋 {user?.username} ({user?.role})</span>
+        <button onClick={handleLogout}>Thoát</button>
       </div>
-      <div style={styles.floatingHeader}>
-        <h1 style={{ margin: 0, fontSize: '16px', color: '#009688' }}>📍 Vĩnh Khánh Map</h1>
-        <div style={{display:'flex', gap:'5px'}}>
-          {LANGUAGES.map(lang => (
-            <button key={lang.code} onClick={() => setLanguage(lang.code)} style={{...styles.langBtn, background: language === lang.code ? '#009688' : 'white', color: language === lang.code ? 'white' : 'black', borderColor: '#009688'}}>{lang.flag}</button>
-          ))}
-        </div>
-      </div>
-      <MapContainer center={mapCenter} zoom={16} style={styles.map} zoomControl={false}>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        <MapController center={mapCenter} />
-        {userLocation && <Marker position={userLocation} icon={blueIcon}><Popup>🌟 Bạn đang ở đây!</Popup></Marker>}
-        {restaurants.map(rest => (
-          <Marker key={rest.id} position={[rest.lat, rest.lng]} icon={redIcon}>
-            <Popup minWidth={250}>
-              <div style={styles.popupContent}>
-                <img src={rest.image_url || "https://placehold.co/200x150"} alt={rest.name} style={styles.popupImg} />
-                <h3 style={{ margin: '10px 0 5px 0', fontSize: '16px' }}>{rest.name}</h3><span style={styles.badge}>🔥 {rest.specialty_dish}</span>
-                <p style={styles.popupDesc}>{rest[LANGUAGES.find(l => l.code === language)?.dbCol as keyof Restaurant] || "Chưa có nội dung."}</p>
-                <button 
-                  style={{...styles.playBtn, background: audioUrl === "playing" ? "#4CAF50" : "#009688"}} 
-                  onClick={() => handlePlayAudioForUser(rest)}
-                >
-                  {audioUrl === "playing" ? "🟢 Đang phát..." : "🔊 Nghe Audio"}
+
+      {/* Admin/Partner Panel Link */}
+      {(user?.role === "admin" || user?.role === "partner") && (
+         <div className="portal-toggle">
+            <button onClick={() => setAuthMode(authMode === "app" ? user.role : "app")}>
+              {authMode === "app" ? "📂 Quản Lý Data" : "📍 Xem Bản Đồ"}
+            </button>
+         </div>
+      )}
+
+      {authMode === "app" ? (
+        <>
+          <div className="lang-selector">
+            {LANGUAGES.map(l => (
+              <button key={l.code} onClick={() => setLanguage(l.code)} className={language === l.code ? "active" : ""}>
+                {l.flag}
+              </button>
+            ))}
+          </div>
+
+          <MapContainer center={mapCenter} zoom={16} style={{ height: "100vh", width: "100vw" }}>
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            <MapController center={mapCenter} />
+            {restaurants.map(rest => {
+              const langConfig = LANGUAGES.find(l => l.code === language);
+              const desc = rest[langConfig?.dbCol as keyof Restaurant] as string;
+              return (
+                <Marker key={rest.id} position={[rest.lat, rest.lng]} icon={redIcon}>
+                  <Popup>
+                    <div className="popup-card">
+                      <img src={rest.image_url} alt={rest.name} referrerPolicy="no-referrer" />
+                      <h3>{rest.name}</h3>
+                      <p>{desc}</p>
+                      <button onClick={() => playAudio(rest[`audio_${language}` as keyof Restaurant] as string)}>
+                        🔊 Nghe Giới Thiệu
+                      </button>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
+          </MapContainer>
+        </>
+      ) : (
+        <div className="admin-portal">
+          <div className="admin-grid">
+            {/* Form Section */}
+            <div className="admin-card">
+              <h3>{editingId ? "✏️ Sửa Quán" : "➕ Thêm Quán"}</h3>
+              <form onSubmit={handleSaveRestaurant}>
+                <input placeholder="Tên quán" value={newRest.name} onChange={e=>setNewRest({...newRest, name:e.target.value})} required/>
+                <input placeholder="Đặc sản" value={newRest.specialty_dish} onChange={e=>setNewRest({...newRest, specialty_dish:e.target.value})} required/>
+                <input placeholder="Link ảnh" value={newRest.image_url} onChange={e=>setNewRest({...newRest, image_url:e.target.value})} />
+                <div className="geo-inputs">
+                  <input type="number" step="any" placeholder="Lat" value={newRest.lat} onChange={e=>setNewRest({...newRest, lat:parseFloat(e.target.value)})}/>
+                  <input type="number" step="any" placeholder="Lng" value={newRest.lng} onChange={e=>setNewRest({...newRest, lng:parseFloat(e.target.value)})}/>
+                </div>
+                <textarea placeholder="Mô tả Tiếng Việt" value={newRest.description} onChange={e=>setNewRest({...newRest, description:e.target.value})} required />
+                <button type="button" onClick={autoGenerateContent} disabled={isGeneratingAll}>
+                   {isGeneratingAll ? "AI Đang xử lý..." : "🪄 Tự động AI (Dịch & Voice)"}
                 </button>
+                <div className="form-actions">
+                  <button type="submit" className="save-btn">Lưu Vào Database</button>
+                  {editingId && <button type="button" onClick={() => setEditingId(null)}>Hủy</button>}
+                </div>
+              </form>
+            </div>
+
+            {/* List Section */}
+            <div className="admin-card">
+              <h3>📋 Danh Sách Quán</h3>
+              <div className="scroll-list">
+                {restaurants.map(r => (
+                  <div key={r.id} className="list-item">
+                    <span>{r.name}</span>
+                    <div className="item-actions">
+                      <button onClick={() => { setEditingId(r.id); setNewRest(r); }}>Sửa</button>
+                      <button onClick={() => handleDeleteRestaurant(r.id, r.name)} className="delete-btn">Xóa</button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </Popup>
-          </Marker>
-        ))}
-      </MapContainer>
+            </div>
+
+            {/* Stats Section (Admin Only) */}
+            {user?.role === "admin" && (
+                <div className="admin-card">
+                  <h3>📈 Thống Kê Hệ Thống</h3>
+                  <div className="stats-box">
+                    <p>Users: {stats.total_users}</p>
+                    <p>Restaurants: {stats.total_restaurants}</p>
+                    <p>Visits: {stats.total_visits}</p>
+                  </div>
+                </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-const styles: { [key: string]: React.CSSProperties } = {
-  container: { fontFamily: 'Arial, sans-serif', height: '100vh', width: '100vw', position: 'relative', overflow: 'hidden' },
-  map: { height: '100%', width: '100%', zIndex: 1 },
-  floatingUserBar: { position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: '#333', color: 'white', padding: '8px 15px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '90%', maxWidth: '400px', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' },
-  floatingHeader: { position: 'absolute', top: '60px', left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: 'white', padding: '8px 15px', borderRadius: '50px', boxShadow: '0 5px 15px rgba(0,0,0,0.15)', display: 'flex', alignItems: 'center', gap: '15px', width: '90%', maxWidth: '400px', justifyContent: 'space-between' },
-  card: { background: 'white', borderRadius: '12px', boxShadow: '0 4px 10px rgba(0,0,0,0.08)', display: 'flex', flexDirection: 'column' },
-  statCard: { flex: 1, background: 'white', padding: '15px', borderRadius: '8px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)', textAlign: 'center' },
-  input: { width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: '5px', boxSizing: 'border-box', fontSize: '14px', fontFamily: 'inherit' },
-  label: { display: 'block', marginBottom: '5px', fontSize: '13px', fontWeight: 'bold', color: '#555' },
-  primaryBtn: { width: '100%', padding: '12px', background: '#009688', color: 'white', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer' },
-  langBtn: { cursor: 'pointer', fontSize: '16px', border: '1px solid', borderRadius: '5px', padding: '2px 5px', transition: '0.2s' },
-  popupContent: { width: '100%', display: 'flex', flexDirection: 'column' },
-  popupImg: { width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px' },
-  badge: { display: 'inline-block', background: '#fff3e0', color: '#e65100', padding: '3px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', alignSelf: 'flex-start', marginBottom: '8px' },
-  popupDesc: { fontSize: '13px', color: '#555', lineHeight: '1.4', margin: '0 0 12px 0', maxHeight: '80px', overflowY: 'auto' },
-  playBtn: { width: '100%', padding: '10px', color: 'white', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', transition: '0.2s' },
-  aiResultBox: { background: '#fafafa', padding: '10px', borderRadius: '8px', border: '1px solid #eee' },
-  playTestBtn: { background: '#ff9800', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginTop: '5px', fontWeight: 'bold' },
-  missingBadge: { fontSize: '11px', color: 'red', fontStyle: 'italic', display: 'block', marginTop: '5px' },
-  adminTabActive: { background: '#2196F3', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px' },
-  adminTabInactive: { background: '#e0e0e0', color: '#555', padding: '10px 20px', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '15px' },
-};
